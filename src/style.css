@@ -1,0 +1,96 @@
+/* Page shell: pure black, no scrolling / rubber-banding / zoom / text selection.
+   The Phaser canvas is centred and scaled to fit the device's safe area. */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  background-color: #000000;
+  overflow: hidden;
+  position: fixed;
+  inset: 0;
+  overscroll-behavior: none;
+  touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none; /* no long-press callout / text selection on iOS */
+  -webkit-user-select: none;
+  -moz-user-select: none;
+  -ms-user-select: none;
+  user-select: none;
+  font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
+    'Segoe UI', Roboto, sans-serif;
+}
+
+/* Fill only the safe area so the canvas — and the bottom controls inside it —
+   never sit under the notch or the home indicator. */
+#game-root {
+  position: fixed;
+  top: env(safe-area-inset-top, 0px);
+  right: env(safe-area-inset-right, 0px);
+  bottom: env(safe-area-inset-bottom, 0px);
+  left: env(safe-area-inset-left, 0px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #000000;
+}
+
+#game-root canvas {
+  display: block;
+  image-rendering: auto;
+}
+
+/* --- landscape hint: suggest portrait on phones held sideways --------- */
+#rotate-hint {
+  display: none;
+}
+
+#rotate-hint p {
+  font-size: 20px;
+  font-weight: 700;
+  color: #c8a45a;
+}
+
+#rotate-hint small {
+  font-size: 13px;
+  color: #9a978d;
+}
+
+.rotate-emblem {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  border: 4px solid #c8a45a;
+  box-shadow: inset 0 0 0 4px #0b0b10, inset 0 0 0 8px #e6c179;
+  animation: rotate-spin 2.6s linear infinite;
+}
+
+@keyframes rotate-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media screen and (orientation: landscape) and (max-height: 540px) {
+  #game-root {
+    visibility: hidden;
+  }
+  #rotate-hint {
+    display: flex;
+    position: fixed;
+    inset: 0;
+    z-index: 9999;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 16px;
+    padding: 24px;
+    text-align: center;
+    background: #07070b;
+  }
+}

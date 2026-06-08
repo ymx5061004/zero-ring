@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, minimum-scale=1.0, user-scalable=no, viewport-fit=cover, shrink-to-fit=no"
+    />
+    <meta name="theme-color" content="#0b0b10" />
+    <meta name="description" content="《零环》— 一款原创移动端竖屏 roguelike 地牢探索游戏" />
+
+    <!-- PWA -->
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="icon" type="image/png" href="./icons/icon-192.png" />
+    <link rel="apple-touch-icon" href="./icons/icon-180.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="零环" />
+
+    <title>零环</title>
+  </head>
+  <body>
+    <div id="game-root"></div>
+
+    <!-- Shown by CSS only when a phone is held in landscape. -->
+    <div id="rotate-hint" aria-hidden="true">
+      <div class="rotate-emblem"></div>
+      <p>请将设备竖向放置</p>
+      <small>《零环》为竖屏游玩设计</small>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

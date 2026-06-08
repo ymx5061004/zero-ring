@@ -1,0 +1,21 @@
+{
+  "name": "zero-ring",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "《零环》— a mobile portrait-first, fully original roguelike built with Vite + TypeScript + Phaser 3.",
+  "scripts": {
+    "gen:assets": "node scripts/generate-assets.ts",
+    "dev": "vite",
+    "prebuild": "node scripts/generate-assets.ts",
+    "build": "tsc && vite build",
+    "preview": "vite preview --host"
+  },
+  "devDependencies": {
+    "typescript": "^6.0.3",
+    "vite": "^8.0.16"
+  },
+  "dependencies": {
+    "phaser": "^3.90.0"
+  }
+}
