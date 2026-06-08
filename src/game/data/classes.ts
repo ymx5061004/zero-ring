@@ -1,7 +1,7 @@
 /**
- * The eight playable archetypes of 《零环》. Every name, epithet, description,
- * skill and stat block here is original to this project — it only evokes the
- * *feel* of traditional fantasy roles.
+ * The playable archetypes of 《零环》. Every name, epithet, description, skill and
+ * stat block here is original to this project — it only evokes the *feel* of
+ * traditional fantasy roles.
  */
 
 /** Stable identifiers for the playable classes. */
@@ -13,7 +13,8 @@ export type ClassId =
   | 'bonebell-priest'
   | 'brokenblade-ranger'
   | 'ironfist-monk'
-  | 'copperlamp-wanderer';
+  | 'copperlamp-wanderer'
+  | 'chainbreaker';
 
 export interface ClassSkill {
   name: string;
@@ -40,8 +41,12 @@ export interface CharClass {
   /** Signature ability. */
   skill: ClassSkill;
 
-  /** Frame index into heroes.png used as this class's avatar. */
-  spriteFrame: number;
+  /**
+   * Stable hero-design key in heroes.png (see scripts/generate-assets.ts). The
+   * actual frame index is resolved from the atlas at runtime, so it never breaks
+   * when the per-hero frame count changes.
+   */
+  hero: string;
   /** Accent colour for UI highlighting. */
   color: number;
 }
@@ -62,7 +67,7 @@ export const CLASSES: readonly CharClass[] = [
       name: '环誓',
       description: '每次探索一次，受到致命伤害时不会倒下，并回复少许生命。',
     },
-    spriteFrame: 0,
+    hero: 'knight',
     color: 0x4a78b0,
   },
   {
@@ -80,7 +85,7 @@ export const CLASSES: readonly CharClass[] = [
       name: '灰烬调和',
       description: '饮用药剂时额外回复生命，并能净化中毒与衰弱。',
     },
-    spriteFrame: 32,
+    hero: 'alchemist',
     color: 0xa8744e,
   },
   {
@@ -98,7 +103,7 @@ export const CLASSES: readonly CharClass[] = [
       name: '裂隙穿行',
       description: '每层可侧身穿过一格墙壁一次，避开守卫与死路。',
     },
-    spriteFrame: 12,
+    hero: 'rogue',
     color: 0x7a5ad0,
   },
   {
@@ -116,7 +121,7 @@ export const CLASSES: readonly CharClass[] = [
       name: '盐爆',
       description: '消耗法力，引爆星盐对周围一圈敌人造成法术伤害。',
     },
-    spriteFrame: 8,
+    hero: 'mage',
     color: 0x4ab0c8,
   },
   {
@@ -134,7 +139,7 @@ export const CLASSES: readonly CharClass[] = [
       name: '钟鸣',
       description: '敲响骨钟，驱散并削弱周围的亡灵，短暂提升自身防御。',
     },
-    spriteFrame: 16,
+    hero: 'cleric',
     color: 0xc0a050,
   },
   {
@@ -152,7 +157,7 @@ export const CLASSES: readonly CharClass[] = [
       name: '碎刃投掷',
       description: '掷出碎裂的刀片，对一名远处敌人造成额外伤害。',
     },
-    spriteFrame: 4,
+    hero: 'ranger',
     color: 0x4a9a5a,
   },
   {
@@ -170,7 +175,7 @@ export const CLASSES: readonly CharClass[] = [
       name: '连击',
       description: '连续命中同一目标后，下一击必定造成重击。',
     },
-    spriteFrame: 24,
+    hero: 'monk',
     color: 0xd07a30,
   },
   {
@@ -188,8 +193,26 @@ export const CLASSES: readonly CharClass[] = [
       name: '灯火',
       description: '点亮铜灯照亮四周，吓退潜伏的暗影并照见隐藏之物。',
     },
-    spriteFrame: 28,
+    hero: 'bard',
     color: 0xb87a3a,
+  },
+  {
+    id: 'chainbreaker',
+    name: '断链狂徒',
+    title: '挣脱锁链者',
+    description: '挣脱镣铐的亡命之徒，挥斧蛮战、悍不畏死，受创越重，怒火越盛。',
+    hp: 32,
+    attack: 9,
+    defense: 2,
+    agility: 4,
+    magic: 1,
+    startingItems: ['axe', 'meat', 'potion_red'],
+    skill: {
+      name: '狂怒',
+      description: '生命越低，攻击越凶；濒死时爆发出骇人的蛮力。',
+    },
+    hero: 'barbarian',
+    color: 0xc2502e,
   },
 ] as const;
 

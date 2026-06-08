@@ -110,6 +110,16 @@ export function heroByFrame(atlas: SpriteAtlas, frame: number): HeroEntry | null
   );
 }
 
+/** Find a hero design by its stable key (e.g. 'knight', 'mage', 'alchemist'). */
+export function heroByKey(atlas: SpriteAtlas, key: string): HeroEntry | null {
+  return atlas.heroes.find((h) => h.key === key) ?? null;
+}
+
+/** The idle[0] avatar frame for a hero key (0 if unknown). */
+export function heroAvatarFrame(atlas: SpriteAtlas, key: string): number {
+  return heroByKey(atlas, key)?.idle[0] ?? 0;
+}
+
 /** Find an item entry by key (e.g. 'sword', 'potion_red'). */
 export function itemByKey(atlas: SpriteAtlas, key: string): ItemEntry | null {
   return atlas.items.find((it) => it.key === key) ?? null;

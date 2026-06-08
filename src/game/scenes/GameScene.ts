@@ -27,7 +27,7 @@ import {
 import {
   getAtlas,
   heroAnim,
-  heroByFrame,
+  heroAvatarFrame,
   monsterAnim,
   monsterByFrame,
   tileByKey,
@@ -170,7 +170,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.cls = getClass(classId);
-    this.heroKey = this.atlas ? heroByFrame(this.atlas, this.cls.spriteFrame)?.key ?? 'knight' : 'knight';
+    this.heroKey = this.cls.hero;
     this.radius = this.cls.id === 'copperlamp-wanderer' ? 10 : 8;
 
     this.rng = new RNG((Math.floor(Math.random() * 0xffffffff) ^ Math.imul(this.depth, 0x9e3779b1)) >>> 0);
@@ -350,9 +350,10 @@ export class GameScene extends Phaser.Scene {
   }
 
   private buildPlayer(): void {
-    const hasHeroes = this.textures.exists('heroes');
+    const hasHeroes = this.textures.exists('heroes') && this.atlas !== null;
+    const frame = hasHeroes ? heroAvatarFrame(this.atlas!, this.cls.hero) : undefined;
     this.playerSprite = this.add
-      .sprite(PLAY_CX, PLAY_CY, hasHeroes ? 'heroes' : 'zr-px', hasHeroes ? this.cls.spriteFrame : undefined)
+      .sprite(PLAY_CX, PLAY_CY, hasHeroes ? 'heroes' : 'zr-px', frame)
       .setDepth(5);
     if (hasHeroes) {
       this.playerSprite.setScale(1.25);
@@ -372,8 +373,8 @@ export class GameScene extends Phaser.Scene {
     frame.lineBetween(0, HUD_H, GAME_WIDTH, HUD_H);
     hud.add(frame);
 
-    if (this.textures.exists('heroes')) {
-      hud.add(this.add.image(20, 32, 'heroes', this.cls.spriteFrame).setScale(1.05));
+    if (this.textures.exists('heroes') && this.atlas) {
+      hud.add(this.add.image(20, 32, 'heroes', heroAvatarFrame(this.atlas, this.cls.hero)).setScale(1.05));
     }
 
     hud.add(

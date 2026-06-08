@@ -39,6 +39,7 @@ const config: Phaser.Types.Core.GameConfig = {
   render: {
     antialias: true,
     pixelArt: false,
+    roundPixels: true,
   },
   input: {
     activePointers: 2,
@@ -46,6 +47,16 @@ const config: Phaser.Types.Core.GameConfig = {
 };
 
 const game = new Phaser.Game(config);
+
+// Keep the input/scale bounds correct after the (safe-area) layout settles, so
+// taps map to the right place on mobile. Phaser handles 'resize' itself; these
+// extra refreshes catch the post-load / orientation settle.
+const refreshScale = (): void => {
+  game.scale.refresh();
+};
+window.addEventListener('load', refreshScale);
+window.addEventListener('orientationchange', () => window.setTimeout(refreshScale, 150));
+window.setTimeout(refreshScale, 250);
 
 // Dev-only console handles for inspection/debugging. Stripped from production builds.
 if (import.meta.env.DEV) {

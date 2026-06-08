@@ -5,7 +5,7 @@ import { CLASSES, type CharClass } from '../data/classes';
 import {
   getAtlas,
   heroAnim,
-  heroByFrame,
+  heroAvatarFrame,
   itemByKey,
   type SpriteAtlas,
 } from '../assets/atlas';
@@ -277,10 +277,9 @@ export class ClassSelectScene extends Phaser.Scene {
   /** A class avatar — the generated hero sprite (animated) or a text fallback. */
   private makeAvatar(cls: CharClass, x: number, y: number, scale: number): Phaser.GameObjects.GameObject {
     if (this.atlas && this.textures.exists('heroes')) {
-      const sprite = this.add.sprite(x, y, 'heroes', cls.spriteFrame).setScale(scale);
-      const hero = heroByFrame(this.atlas, cls.spriteFrame);
-      if (hero && this.anims.exists(heroAnim(hero.key, 'idle'))) {
-        sprite.play(heroAnim(hero.key, 'idle'));
+      const sprite = this.add.sprite(x, y, 'heroes', heroAvatarFrame(this.atlas, cls.hero)).setScale(scale);
+      if (this.anims.exists(heroAnim(cls.hero, 'idle'))) {
+        sprite.play(heroAnim(cls.hero, 'idle'));
       }
       return sprite;
     }
@@ -314,7 +313,7 @@ export class ClassSelectScene extends Phaser.Scene {
     });
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       if (!this.dragging) return;
-      if (Math.abs(p.y - this.dragStartY) > 6) this.dragged = true;
+      if (Math.abs(p.y - this.dragStartY) > 14) this.dragged = true;
       this.list.y = clampY(this.list.y + (p.y - this.lastPy));
       this.lastPy = p.y;
     });

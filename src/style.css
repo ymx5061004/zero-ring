@@ -28,21 +28,24 @@ body {
 
 /* Fill only the safe area so the canvas — and the bottom controls inside it —
    never sit under the notch or the home indicator. */
+/* Phaser's autoCenter (CENTER_BOTH) positions the canvas; we must NOT also
+   centre it with flexbox — double-centring pushed the canvas off to one side. */
 #game-root {
   position: fixed;
   top: env(safe-area-inset-top, 0px);
   right: env(safe-area-inset-right, 0px);
   bottom: env(safe-area-inset-bottom, 0px);
   left: env(safe-area-inset-left, 0px);
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  overflow: hidden;
   background-color: #000000;
 }
 
 #game-root canvas {
   display: block;
   image-rendering: auto;
+  /* Critical for reliable taps on mobile: stop the browser from treating
+     touches on the game as scroll/zoom gestures (which cancel the pointer). */
+  touch-action: none;
 }
 
 /* --- landscape hint: suggest portrait on phones held sideways --------- */
