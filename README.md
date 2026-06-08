@@ -4,6 +4,8 @@
 
 > 目标：逐层深入环窟（共五层），在最深处击败「零环守卫」，取回零环。
 
+**在线试玩**：<https://ymx5061004.github.io/zero-ring/>（推送到 `main` 后，由 GitHub Actions 自动构建并部署到 GitHub Pages）
+
 ## 技术栈
 
 - [Vite](https://vitejs.dev/) —— 开发服务器与打包
@@ -75,6 +77,8 @@ npm run gen:assets
 - 所有图形均由 `scripts/generate-assets.ts` 以代码实时绘制并生成 PNG，再由 Phaser 按帧加载；UI 控件由 `Phaser.Graphics` 绘制。
 - 职业、怪物、物品的名称、描述与数值均为本项目原创设定。
 - 仓库内不含任何外部下载或第三方版权的图片、音频、字体或代码。
+
+本项目以 **MIT 协议**开源，详见 [LICENSE](LICENSE)（文末附中英文原创声明）。
 
 ## 项目结构
 

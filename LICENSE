@@ -1,0 +1,38 @@
+MIT License
+
+Copyright (c) 2026 ymx5061004
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+---------------------------------------------------------------------------
+Originality Notice / 原创声明
+---------------------------------------------------------------------------
+
+《零环》(Zero Ring) is an original game. It only draws on the *genre* of
+traditional turn-based roguelikes; it does NOT use the name, logo, art, UI,
+icons, text, source code, or specific numeric values of Pathos or of any other
+game. All graphics are generated procedurally by code
+(scripts/generate-assets.ts); every class, monster, and item name, description,
+and number is original to this project. No third-party or copyrighted image,
+audio, font, or code asset is included in this repository.
+
+《零环》为原创游戏，仅借鉴传统回合制 roguelike 的玩法类型，不包含 Pathos 或任何
+其他游戏的名称、Logo、素材、UI、图标、文本、源代码或具体数值。所有图形均由代码
+（scripts/generate-assets.ts）实时生成；职业、怪物、物品的名称、描述与数值均为本
+项目原创；仓库内不含任何第三方或受版权保护的图片、音频、字体或代码素材。
