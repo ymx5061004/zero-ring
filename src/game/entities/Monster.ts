@@ -4,14 +4,18 @@ import type { AIType, MonsterDef, MonsterTag, MonsterTrait } from '../data/monst
 /** A live monster instance: a positioned Entity plus its definition + AI traits. */
 export class Monster extends Entity {
   readonly id: string;
-  readonly name: string;
-  readonly exp: number;
+  /** Mutable so an elite can prefix its name (e.g. 精英·骷髅). */
+  name: string;
+  /** Mutable so an elite can grant extra experience. */
+  exp: number;
   readonly sightRange: number;
   readonly aiType: AIType;
   readonly spriteFrame: number;
   readonly tags: MonsterTag[];
   readonly traits: MonsterTrait[];
   readonly boss: boolean;
+  /** An elevated variant: tougher, hits harder, worth more, drops better (0.3). */
+  elite = false;
   /** Boss only: flips true once the second phase has been triggered. */
   phase2 = false;
   /** slowButStrong monsters act on alternating turns; this toggles each turn. */
@@ -45,5 +49,15 @@ export class Monster extends Entity {
 
   hasTrait(trait: MonsterTrait): boolean {
     return this.traits.includes(trait);
+  }
+
+  /** Promote to an elite: tougher, harder-hitting and worth more experience. */
+  makeElite(depth: number): void {
+    this.elite = true;
+    this.maxHp = Math.round(this.maxHp * 1.8);
+    this.hp = this.maxHp;
+    this.attack += Math.floor(depth / 2) + 1;
+    this.exp = Math.round(this.exp * 2);
+    this.name = `精英·${this.name}`;
   }
 }

@@ -3,11 +3,12 @@ import { FontFamily, GAME_HEIGHT, GAME_WIDTH, Palette, toCss } from '../config';
 import { HtmlButton } from './HtmlButton';
 import { blockUi, unblockUi } from './UiLayer';
 import { getItem, RARITY_COLOR, RARITY_NAME, TYPE_NAME } from '../data/items';
+import { isGear, type ItemInstance } from '../systems/ItemInstance';
 import type { InventorySystem } from '../systems/InventorySystem';
 
-/** One purchasable line of the merchant's stock. */
+/** One purchasable line of the merchant's stock (carries the exact instance sold). */
 export interface ShopEntry {
-  id: string;
+  inst: ItemInstance;
   price: number;
   sold: boolean;
 }
@@ -112,7 +113,10 @@ export class ShopView extends Phaser.GameObjects.Container {
 
     const rowsTop = this.top + 72;
     this.stock.forEach((entry, i) => {
-      const def = getItem(entry.id);
+      const def = getItem(entry.inst.defId);
+      // Gear shows its rolled name (affixes / +N / blessing); consumables show the
+      // plain catalogue name (the merchant's wares are known, not aliased).
+      const label = isGear(def.type) ? this.inv.name(entry.inst) : def.name;
       const cy = rowsTop + i * ROW_H + ROW_H / 2;
       const rx = PX + 14;
       const rw = PW - 28;
@@ -130,7 +134,7 @@ export class ShopView extends Phaser.GameObjects.Container {
       }
       this.content.add(
         this.scene.add
-          .text(rx + 50, cy - 9, def.name, { fontFamily: FontFamily, fontSize: '15px', color: toCss(entry.sold ? Palette.textMuted : RARITY_COLOR[def.rarity]), fontStyle: 'bold' })
+          .text(rx + 50, cy - 9, label, { fontFamily: FontFamily, fontSize: '14px', color: toCss(entry.sold ? Palette.textMuted : RARITY_COLOR[def.rarity]), fontStyle: 'bold', wordWrap: { width: rw - 110 } })
           .setOrigin(0, 0.5),
       );
       this.content.add(

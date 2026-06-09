@@ -46,7 +46,7 @@ import { SettingsView } from '../ui/SettingsView';
 import { rollChestLoot, rollMonsterDrop, rollShopStock } from '../systems/LootSystem';
 import { equipSlotOf, getItem, itemPrice, type ScrollAction } from '../data/items';
 import { ShopView, type ShopEntry } from '../ui/ShopView';
-import { Identifier, plainInstance, rollInstance, type Beatitude, type ItemInstance } from '../systems/ItemInstance';
+import { Identifier, isGear, plainInstance, rollInstance, type Beatitude, type ItemInstance } from '../systems/ItemInstance';
 
 interface GameSceneData {
   classId?: ClassId;
@@ -71,6 +71,7 @@ const PLAY_CY = 404;
 const HUD_H = 68;
 const MOVE_MS = 130;
 const CRIT_COLOR = 0xffd24a;
+const ELITE_TINT = 0xffcc66;
 
 const TILE_COLOR: Record<TileType, number> = {
   [TileType.Wall]: Palette.wall,
@@ -404,14 +405,23 @@ export class GameScene extends Phaser.Scene {
     this.monsters = [];
     this.monsterSprites.clear();
     const hasTex = this.textures.exists('monsters');
+    // Elites grow more common with depth; deterministic from the floor seed.
+    const eliteChance = Math.min(0.22, 0.04 + this.depth * 0.025);
     for (const mob of this.map.monsters) {
       const def = getMonster(mob.key);
       const monster = new Monster(def, mob.x, mob.y);
+      if (!def.boss && this.rng.chance(eliteChance)) monster.makeElite(this.depth);
       this.monsters.push(monster);
       if (!hasTex) continue;
       const sprite = this.add.sprite(0, 0, 'monsters', def.spriteFrame).setVisible(false);
       const design = this.atlas ? monsterByFrame(this.atlas, def.spriteFrame) : null;
       if (design && this.anims.exists(monsterAnim(design.key, 'idle'))) sprite.play(monsterAnim(design.key, 'idle'));
+      if (monster.elite) {
+        // A golden tint + larger silhouette flags the threat; stored so the hit
+        // flash can restore it after clearing the white flash.
+        sprite.setScale(1.3).setTint(ELITE_TINT);
+        sprite.setData('tint', ELITE_TINT);
+      }
       this.tileLayer.add(sprite);
       this.monsterSprites.set(monster, sprite);
     }
@@ -426,8 +436,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   /** Spawn a freshly-rolled item entity on the map (drops, chest loot, floor loot). */
-  private spawnItem(id: string, x: number, y: number, redraw = true): void {
-    this.placeFloorItem(rollInstance(id, this.rng, this.depth), x, y, redraw);
+  private spawnItem(id: string, x: number, y: number, redraw = true, qualityDepth = this.depth): void {
+    this.placeFloorItem(rollInstance(id, this.rng, qualityDepth), x, y, redraw);
   }
 
   /** Place an existing instance on the floor, nudging off an occupied tile. */
@@ -475,12 +485,25 @@ export class GameScene extends Phaser.Scene {
       if (!free) return;
       [mx, my] = free;
     }
-    // Seeded stock so a resumed floor shows the same wares.
-    this.shopStock = rollShopStock(this.depth, this.rng, 5).map((id) => ({
-      id,
-      price: itemPrice(getItem(id), this.depth),
-      sold: false,
-    }));
+    // Seeded stock so a resumed floor shows the same wares. Gear has a chance to
+    // be a rolled (affixed / enchanted / blessed) piece — better wares cost more.
+    this.shopStock = rollShopStock(this.depth, this.rng, 5).map((id) => {
+      const def = getItem(id);
+      let inst: ItemInstance;
+      if (isGear(def.type) && this.rng.chance(0.5)) {
+        inst = rollInstance(id, this.rng, this.depth + 1);
+        inst.identified = true; // the merchant's gear is appraised
+        if (inst.beatitude === 'cursed') {
+          inst.beatitude = 'uncursed';
+          if (inst.enchantment < 0) inst.enchantment = 0;
+        }
+      } else {
+        inst = plainInstance(id);
+      }
+      const affixCount = inst.affixes?.length ?? 0;
+      const premium = affixCount * 18 + Math.max(0, inst.enchantment) * 8 + (inst.beatitude === 'blessed' ? 12 : 0);
+      return { inst, price: itemPrice(def, this.depth) + premium, sold: false };
+    });
     const hasHeroes = this.textures.exists('heroes') && this.atlas !== null;
     const frame = hasHeroes ? heroAvatarFrame(this.atlas!, 'alchemist') : undefined;
     const sprite = this.add.sprite(0, 0, hasHeroes ? 'heroes' : 'zr-px', frame).setScale(1.2).setVisible(false);
@@ -1166,10 +1189,32 @@ export class GameScene extends Phaser.Scene {
       );
     }
 
-    const drop = rollMonsterDrop(this.depth, this.rng);
-    if (drop) {
-      this.spawnItem(drop, foe.x, foe.y);
-      this.pushLog(`${foe.name}掉落了${getItem(drop).name}。`);
+    if (foe.elite) {
+      // Elites always leave a stronger, *appraised* and never-cursed piece behind —
+      // biased toward gear (one re-roll) so the reward feels worth the tougher fight.
+      let id = rollShopStock(this.depth, this.rng, 1)[0];
+      if (id && !isGear(getItem(id).type)) {
+        const alt = rollShopStock(this.depth, this.rng, 1)[0];
+        if (alt && isGear(getItem(alt).type)) id = alt;
+      }
+      if (id) {
+        const inst = rollInstance(id, this.rng, this.depth + 4);
+        inst.identified = true;
+        if (inst.beatitude === 'cursed') inst.beatitude = 'uncursed';
+        if (inst.enchantment < 0) inst.enchantment = 0;
+        // Guarantee the reward is at least slightly better than a plain piece.
+        if (isGear(getItem(id).type) && (inst.affixes?.length ?? 0) === 0 && inst.enchantment === 0) {
+          inst.enchantment = 1;
+        }
+        this.placeFloorItem(inst, foe.x, foe.y);
+        this.pushLog(`精英倒下，留下了${this.inventory.name(inst)}！`);
+      }
+    } else {
+      const drop = rollMonsterDrop(this.depth, this.rng);
+      if (drop) {
+        this.spawnItem(drop, foe.x, foe.y);
+        this.pushLog(`${foe.name}掉落了${getItem(drop).name}。`);
+      }
     }
 
     if (foe.hasTrait('explodesOnDeath')) this.explodeOnDeath(foe, fx, fy);
@@ -1320,11 +1365,14 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** A brief white "hit flash" on any sprite (req. 14). */
+  /** A brief white "hit flash" on any sprite (req. 14); restores an elite's tint. */
   private flashSprite(spr: Phaser.GameObjects.Sprite): void {
+    const baseTint = spr.getData('tint') as number | undefined;
     spr.setTintFill(0xffffff);
     this.time.delayedCall(90, () => {
-      if (spr.active) spr.clearTint();
+      if (!spr.active) return;
+      if (baseTint !== undefined) spr.setTint(baseTint);
+      else spr.clearTint();
     });
   }
 
@@ -2311,17 +2359,16 @@ export class GameScene extends Phaser.Scene {
       this.pushLog('金币不足。');
       return;
     }
-    const inst = plainInstance(entry.id);
-    inst.identified = true;
-    if (!this.inventory.add(inst)) {
+    if (!this.inventory.add(entry.inst)) {
       this.pushLog('背包已满，先腾出空间（可丢弃物品）。');
       return;
     }
-    const def = getItem(entry.id);
-    if (def.type === 'potion' || def.type === 'scroll') this.inventory.ident.identify(entry.id);
+    const def = getItem(entry.inst.defId);
+    if (def.type === 'potion' || def.type === 'scroll') this.inventory.ident.identify(entry.inst.defId);
     this.inventory.gold -= entry.price;
+    const label = this.inventory.name(entry.inst);
     entry.sold = true;
-    this.pushLog(`你买下了${def.name}（-${entry.price} 金）。`);
+    this.pushLog(`你买下了${label}（-${entry.price} 金）。`);
     this.updateHud();
     this.persist();
   }
