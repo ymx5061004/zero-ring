@@ -10,7 +10,7 @@ import { Monster } from '../entities/Monster';
 import { getMonster } from '../data/monsters';
 import { CLASSES, getClass, type CharClass, type ClassId } from '../data/classes';
 import { SaveManager } from '../core/SaveManager';
-import type { RunState } from '../core/types';
+import type { RunState, SerializedFloor } from '../core/types';
 import { RNG } from '../core/RNG';
 import { computeFOV } from '../core/FOV';
 import { runMonsterTurns, type TurnEvent } from '../core/TurnSystem';
@@ -46,7 +46,7 @@ import { SettingsView } from '../ui/SettingsView';
 import { rollChestLoot, rollMonsterDrop, rollShopStock } from '../systems/LootSystem';
 import { equipSlotOf, getItem, itemPrice, type ScrollAction } from '../data/items';
 import { ShopView, type ShopEntry } from '../ui/ShopView';
-import { Identifier, isGear, plainInstance, rollInstance, type Beatitude, type ItemInstance } from '../systems/ItemInstance';
+import { deserializeInstance, Identifier, isGear, plainInstance, rollInstance, serializeInstance, type Beatitude, type ItemInstance } from '../systems/ItemInstance';
 
 interface GameSceneData {
   classId?: ClassId;
@@ -137,6 +137,8 @@ export class GameScene extends Phaser.Scene {
   private shopStock: ShopEntry[] = [];
   /** Seed of the current floor (persisted so resume rebuilds the same layout). */
   private floorSeed = 0;
+  /** A saved floor snapshot to restore on resume (set in create, consumed once). */
+  private pendingFloor?: SerializedFloor;
   private menuOpen = false;
   private gameOver = false;
 
@@ -202,6 +204,9 @@ export class GameScene extends Phaser.Scene {
       this.kills = run.kills;
       // Reuse the saved floor seed so the resumed layout matches what was left.
       this.floorSeed = run.floorSeed ?? (Math.floor(Math.random() * 0xffffffff) >>> 0);
+      // A full snapshot restores the exact floor state; older saves fall back to
+      // regenerating from the seed (same layout, but the floor restarts).
+      this.pendingFloor = run.floor;
     } else {
       classId = data.classId ?? CLASSES[0].id;
       this.player = Player.fromClass(getClass(classId));
@@ -231,13 +236,21 @@ export class GameScene extends Phaser.Scene {
     this.bindKeyboard();
     this.buildInspectZone();
 
-    this.loadFloor();
+    const restored = !!this.pendingFloor;
+    if (restored) {
+      this.restoreFloor(this.pendingFloor!);
+      this.pendingFloor = undefined;
+    } else {
+      this.loadFloor();
+    }
     this.updateHud();
     this.persist();
     this.pushLog(
-      this.depth >= MAX_DEPTH
-        ? `你踏入环窟最深处——第 ${this.depth} 层。`
-        : `你踏入了环窟的第 ${this.depth} 层。`,
+      restored
+        ? `你回到了环窟第 ${this.depth} 层，旅程继续。`
+        : this.depth >= MAX_DEPTH
+          ? `你踏入环窟最深处——第 ${this.depth} 层。`
+          : `你踏入了环窟的第 ${this.depth} 层。`,
     );
   }
 
@@ -292,6 +305,113 @@ export class GameScene extends Phaser.Scene {
     this.buildItems();
     if (this.depth >= MAX_DEPTH) this.spawnBoss();
     else this.placeMerchant();
+    this.updateFOV();
+    this.refresh();
+  }
+
+  /** Capture the full current floor so 继续游戏 can restore it exactly (0.3). */
+  private snapshotFloor(): SerializedFloor {
+    return {
+      px: this.player.x,
+      py: this.player.y,
+      tiles: this.map.tiles.map((row) => row.slice()),
+      explored: this.map.explored.map((row) => row.map((b) => (b ? 1 : 0))),
+      spawn: { ...this.map.spawn },
+      stairs: { ...this.map.stairsDown },
+      traps: this.map.traps.map((t) => ({ x: t.x, y: t.y, kind: t.kind, hidden: t.hidden })),
+      chests: this.map.chests.map((c) => ({ x: c.x, y: c.y, opened: c.opened, locked: c.locked, trapped: c.trapped })),
+      monsters: this.monsters.map((m) => ({
+        key: m.id, x: m.x, y: m.y, hp: m.hp, maxHp: m.maxHp, attack: m.attack, exp: m.exp,
+        elite: m.elite, name: m.name, skipNext: m.skipNext, phase2: m.phase2, spawnedSplit: m.spawnedSplit,
+      })),
+      items: this.items.map((e) => ({ inst: serializeInstance(e.inst), x: e.x, y: e.y })),
+      merchant: this.merchant
+        ? { x: this.merchant.x, y: this.merchant.y, stock: this.shopStock.map((s) => ({ inst: serializeInstance(s.inst), price: s.price, sold: s.sold })) }
+        : null,
+      skillUses: this.skillUses,
+      ringOathUsed: this.ringOathUsed,
+    };
+  }
+
+  /** Rebuild the floor from a snapshot — the exact state the player left behind. */
+  private restoreFloor(s: SerializedFloor): void {
+    this.stopTravel();
+    this.exitAim();
+    this.comboTarget = null;
+    this.comboCount = 0;
+    this.skillUses = s.skillUses;
+    this.ringOathUsed = s.ringOathUsed;
+    this.monsterSprites.forEach((sp) => sp.destroy());
+    this.monsterSprites.clear();
+    this.monsters = [];
+    this.items.forEach((e) => e.sprite.destroy());
+    this.items = [];
+    this.merchant?.sprite.destroy();
+    this.merchant = undefined;
+    this.shopStock = [];
+
+    const height = s.tiles.length;
+    const width = s.tiles[0]?.length ?? 0;
+    const visible: boolean[][] = [];
+    for (let y = 0; y < height; y++) visible.push(new Array(width).fill(false));
+    this.map = {
+      width,
+      height,
+      tiles: s.tiles.map((row) => row.slice()),
+      rooms: [],
+      spawn: { ...s.spawn },
+      stairsDown: { ...s.stairs },
+      explored: s.explored.map((row) => row.map((n) => n === 1)),
+      visible,
+      monsters: [],
+      items: [],
+      traps: s.traps.map((t) => ({ x: t.x, y: t.y, kind: t.kind as TrapInstance['kind'], hidden: t.hidden })),
+      chests: s.chests.map((c) => ({ x: c.x, y: c.y, opened: c.opened, locked: c.locked, trapped: c.trapped })),
+    };
+    this.player.x = s.px;
+    this.player.y = s.py;
+
+    const hasTex = this.textures.exists('monsters');
+    for (const ms of s.monsters) {
+      const def = getMonster(ms.key);
+      const m = new Monster(def, ms.x, ms.y);
+      m.hp = ms.hp;
+      m.maxHp = ms.maxHp;
+      m.attack = ms.attack;
+      m.exp = ms.exp;
+      m.name = ms.name;
+      m.elite = ms.elite;
+      m.skipNext = ms.skipNext;
+      m.phase2 = ms.phase2;
+      m.spawnedSplit = ms.spawnedSplit;
+      this.monsters.push(m);
+      if (!hasTex) continue;
+      const sprite = this.add.sprite(0, 0, 'monsters', def.spriteFrame).setVisible(false);
+      const design = this.atlas ? monsterByFrame(this.atlas, def.spriteFrame) : null;
+      if (design && this.anims.exists(monsterAnim(design.key, 'idle'))) sprite.play(monsterAnim(design.key, 'idle'));
+      if (m.boss) sprite.setScale(1.45);
+      else if (m.elite) {
+        sprite.setScale(1.3).setTint(ELITE_TINT);
+        sprite.setData('tint', ELITE_TINT);
+      }
+      this.tileLayer.add(sprite);
+      this.monsterSprites.set(m, sprite);
+    }
+
+    for (const it of s.items) {
+      this.placeFloorItem(deserializeInstance(it.inst), it.x, it.y, false);
+    }
+
+    if (s.merchant) {
+      this.shopStock = s.merchant.stock.map((e) => ({ inst: deserializeInstance(e.inst), price: e.price, sold: e.sold }));
+      const hasHeroes = this.textures.exists('heroes') && this.atlas !== null;
+      const frame = hasHeroes ? heroAvatarFrame(this.atlas!, 'alchemist') : undefined;
+      const sprite = this.add.sprite(0, 0, hasHeroes ? 'heroes' : 'zr-px', frame).setScale(1.2).setVisible(false);
+      if (hasHeroes && this.anims.exists(heroAnim('alchemist', 'idle'))) sprite.play(heroAnim('alchemist', 'idle'));
+      this.tileLayer.add(sprite);
+      this.merchant = { x: s.merchant.x, y: s.merchant.y, sprite };
+    }
+
     this.updateFOV();
     this.refresh();
   }
@@ -2430,6 +2550,7 @@ export class GameScene extends Phaser.Scene {
       turn: this.turn,
       kills: this.kills,
       floorSeed: this.floorSeed,
+      floor: this.snapshotFloor(),
       createdAt: this.createdAt,
     };
     SaveManager.saveRun(run);
