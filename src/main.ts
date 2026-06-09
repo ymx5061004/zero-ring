@@ -16,18 +16,32 @@ import { SpriteShowcaseScene } from './game/scenes/SpriteShowcaseScene';
  * (FIT + centred) onto whatever screen it runs on. The page itself is black and
  * non-scrolling; see src/style.css.
  */
-// Render every Text object's glyph texture at the device's pixel density so text
-// stays crisp on high-DPI phones (the 390×844 canvas is upscaled by FIT, which
-// would otherwise blur text). Patches the factory so all `this.add.text(...)`
-// calls inherit it; size/position/input are unaffected.
-const TEXT_RESOLUTION = Math.min(Math.max(window.devicePixelRatio || 1, 1), 3);
+
+// --- Crisp text on high-DPI screens ------------------------------------------
+// FIT mode keeps the canvas *backing buffer* at the game size and CSS-upscales it
+// to fill the screen. At the logical 390×844 that buffer is far smaller than a
+// phone's physical pixel grid (e.g. ×3 on retina), so the browser stretches it and
+// everything — text most visibly — turns to mush. Bumping a Text object's own
+// `resolution` can't fix that alone: the high-res glyph texture still gets squashed
+// into a 390-wide buffer.
+//
+// So we render the *whole* game at device-pixel density: the canvas buffer is sized
+// to GAME_*×SUPERSAMPLE and every (non-scrolling) main camera is zoomed by the same
+// factor, which leaves all 390×844 layout coordinates untouched while the pixels are
+// drawn at native density. The Text `resolution` patch below then matches, so glyph
+// textures are 1:1 with the buffer and stay sharp. FIT still CSS-fits the (now
+// high-res) buffer to the screen, so the on-screen size is unchanged.
+const SUPERSAMPLE = Math.min(Math.max(window.devicePixelRatio || 1, 1), 3);
+
+// Patch the factory so all `this.add.text(...)` calls inherit the matching
+// resolution; size/position/input are unaffected.
 const factory = Phaser.GameObjects.GameObjectFactory.prototype as unknown as {
   text(x: number, y: number, text: string | string[], style?: Record<string, unknown>): Phaser.GameObjects.Text;
 };
 const originalText = factory.text;
 factory.text = function patchedText(x, y, text, style) {
   const merged = { ...(style ?? {}) };
-  if (merged.resolution === undefined) merged.resolution = TEXT_RESOLUTION;
+  if (merged.resolution === undefined) merged.resolution = SUPERSAMPLE;
   return originalText.call(this, x, y, text, merged);
 };
 
@@ -38,8 +52,11 @@ const config: Phaser.Types.Core.GameConfig = {
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
-    width: GAME_WIDTH,
-    height: GAME_HEIGHT,
+    // Backing buffer at device-pixel density; the design space stays 390×844 via
+    // the per-camera zoom installed below. Aspect ratio is unchanged (the factor
+    // cancels), so FIT letterboxes exactly as before.
+    width: GAME_WIDTH * SUPERSAMPLE,
+    height: GAME_HEIGHT * SUPERSAMPLE,
   },
   scene: [
     BootScene,
@@ -62,6 +79,26 @@ const config: Phaser.Types.Core.GameConfig = {
 };
 
 const game = new Phaser.Game(config);
+
+// Zoom every scene's main camera by SUPERSAMPLE so the high-density buffer renders
+// the 390×844 design at native pixels. `centerOn` the design centre cancels the
+// zoom's origin offset, mapping logical (0,0)→(0,0) and (390,844)→buffer corner —
+// so all scene coordinates, input hit-testing and the DOM UI overlay are unaffected.
+// None of the scenes scroll their camera (the dungeon moves its own container), so a
+// single zoom+centre is correct for world and HUD alike. Re-applied on every CREATE
+// to survive scene restarts. READY fires after the SceneManager's bootQueue, so the
+// scene list is fully populated and no scene has rendered yet (no first-frame flash).
+if (SUPERSAMPLE !== 1) {
+  game.events.once(Phaser.Core.Events.READY, () => {
+    for (const scene of game.scene.scenes) {
+      scene.sys.events.on(Phaser.Scenes.Events.CREATE, () => {
+        const cam = scene.cameras.main;
+        cam.setZoom(SUPERSAMPLE);
+        cam.centerOn(GAME_WIDTH / 2, GAME_HEIGHT / 2);
+      });
+    }
+  });
+}
 
 // Keep the input/scale bounds correct after the (safe-area) layout settles, so
 // taps map to the right place on mobile. Phaser handles 'resize' itself; these
