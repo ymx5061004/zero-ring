@@ -129,6 +129,8 @@ export class GameScene extends Phaser.Scene {
   private invView?: InventoryView;
   private mapView?: MapView;
   private settingsView?: SettingsView;
+  /** Seed of the current floor (persisted so resume rebuilds the same layout). */
+  private floorSeed = 0;
   private menuOpen = false;
   private gameOver = false;
 
@@ -169,6 +171,8 @@ export class GameScene extends Phaser.Scene {
     this.menuOpen = false;
     this.gameOver = false;
     this.invView = undefined;
+    this.mapView = undefined;
+    this.settingsView = undefined;
     this.logLines = [];
     this.atlas = getAtlas(this);
 
@@ -189,6 +193,8 @@ export class GameScene extends Phaser.Scene {
       this.inventory = new InventorySystem(this.player, ident);
       this.inventory.restore(run.gold, run.bag, run.equip);
       this.kills = run.kills;
+      // Reuse the saved floor seed so the resumed layout matches what was left.
+      this.floorSeed = run.floorSeed ?? (Math.floor(Math.random() * 0xffffffff) >>> 0);
     } else {
       classId = data.classId ?? CLASSES[0].id;
       this.player = Player.fromClass(getClass(classId));
@@ -199,6 +205,7 @@ export class GameScene extends Phaser.Scene {
       this.inventory = new InventorySystem(this.player, ident);
       this.grantStartingItems(getClass(classId));
       this.kills = 0;
+      this.floorSeed = Math.floor(Math.random() * 0xffffffff) >>> 0;
     }
 
     this.cls = getClass(classId);
@@ -265,6 +272,9 @@ export class GameScene extends Phaser.Scene {
     this.items.forEach((e) => e.sprite.destroy());
     this.items = [];
 
+    // Seed generation from the (persisted) floor seed so a resumed run rebuilds
+    // the identical layout, monsters and loot rather than a fresh floor.
+    this.rng = new RNG(this.floorSeed >>> 0);
     this.map = generateDungeon(this.depth, this.rng);
     this.player.x = this.map.spawn.x;
     this.player.y = this.map.spawn.y;
@@ -302,6 +312,8 @@ export class GameScene extends Phaser.Scene {
     if (this.depth >= MAX_DEPTH) return;
     this.busy = true;
     this.depth += 1;
+    // A new floor gets its own fresh seed (persisted on arrival below).
+    this.floorSeed = Math.floor(Math.random() * 0xffffffff) >>> 0;
     const cam = this.cameras.main;
     cam.fadeOut(240, 0, 0, 0);
     cam.once(Phaser.Cameras.Scene2D.Events.FADE_OUT_COMPLETE, () => {
@@ -2132,6 +2144,10 @@ export class GameScene extends Phaser.Scene {
     if (this.settingsView) return;
     this.menuOpen = true;
     this.settingsView = new SettingsView(this, () => {
+      // SettingsView.close() tears down its own buttons but NOT its container, so
+      // the owner must destroy it — otherwise the (button-less) panel stays stuck
+      // on screen with no way to dismiss it.
+      this.settingsView?.destroy();
       this.settingsView = undefined;
       this.animScale = Settings.animScale();
       this.menuOpen = false;
@@ -2194,6 +2210,7 @@ export class GameScene extends Phaser.Scene {
       ident: this.inventory.ident.serialize(),
       turn: this.turn,
       kills: this.kills,
+      floorSeed: this.floorSeed,
       createdAt: this.createdAt,
     };
     SaveManager.saveRun(run);

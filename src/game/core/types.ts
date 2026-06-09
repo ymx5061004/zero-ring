@@ -29,6 +29,11 @@ export interface RunState {
   ident?: { aliases: Array<[string, string]>; known: string[] };
   turn: number;
   kills: number;
+  /**
+   * Seed of the current floor's RNG. Persisting it makes resume regenerate the
+   * *same* layout instead of a fresh one. Optional so pre-existing saves still load.
+   */
+  floorSeed?: number;
   /** Epoch millis when the run began (stamped by the scene, not in scripts). */
   createdAt: number;
 }
