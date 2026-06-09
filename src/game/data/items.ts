@@ -81,6 +81,16 @@ export const TYPE_NAME: Record<ItemType, string> = {
   gold: '金币',
 };
 
+/** Base gold value by rarity; the merchant scales it with depth. */
+const RARITY_PRICE: Record<Rarity, number> = { common: 10, uncommon: 26, rare: 60, epic: 130 };
+
+/** What the merchant charges for an item at a given depth (consumables are cheaper). */
+export function itemPrice(def: ItemDef, depth: number): number {
+  const consumable = def.type === 'potion' || def.type === 'scroll' || def.type === 'food';
+  const base = RARITY_PRICE[def.rarity] * (consumable ? 0.7 : 1);
+  return Math.max(3, Math.round(base * (1 + depth * 0.12)));
+}
+
 export const ITEMS: readonly ItemDef[] = [
   // --- weapons (mainhand) ---------------------------------------------
   { id: 'rusty_dagger', name: '锈蚀匕首', type: 'weapon', gearSlot: 'mainhand', rarity: 'common', spriteFrame: 2, description: '一柄布满锈斑的旧匕首，轻巧而不起眼。', effects: { equip: { attack: 2, agility: 1 } } },

@@ -43,8 +43,9 @@ import { InventoryView } from '../ui/InventoryView';
 import { GameMenu } from '../ui/GameMenu';
 import { MapView } from '../ui/MapView';
 import { SettingsView } from '../ui/SettingsView';
-import { rollChestLoot, rollMonsterDrop } from '../systems/LootSystem';
-import { equipSlotOf, getItem, type ScrollAction } from '../data/items';
+import { rollChestLoot, rollMonsterDrop, rollShopStock } from '../systems/LootSystem';
+import { equipSlotOf, getItem, itemPrice, type ScrollAction } from '../data/items';
+import { ShopView, type ShopEntry } from '../ui/ShopView';
 import { Identifier, plainInstance, rollInstance, type Beatitude, type ItemInstance } from '../systems/ItemInstance';
 
 interface GameSceneData {
@@ -129,6 +130,10 @@ export class GameScene extends Phaser.Scene {
   private invView?: InventoryView;
   private mapView?: MapView;
   private settingsView?: SettingsView;
+  private shopView?: ShopView;
+  /** The floor's merchant (absent on the boss floor); stock is part of the seed. */
+  private merchant?: { x: number; y: number; sprite: Phaser.GameObjects.Sprite };
+  private shopStock: ShopEntry[] = [];
   /** Seed of the current floor (persisted so resume rebuilds the same layout). */
   private floorSeed = 0;
   private menuOpen = false;
@@ -173,6 +178,7 @@ export class GameScene extends Phaser.Scene {
     this.invView = undefined;
     this.mapView = undefined;
     this.settingsView = undefined;
+    this.shopView = undefined;
     this.logLines = [];
     this.atlas = getAtlas(this);
 
@@ -271,6 +277,9 @@ export class GameScene extends Phaser.Scene {
     this.monsters = [];
     this.items.forEach((e) => e.sprite.destroy());
     this.items = [];
+    this.merchant?.sprite.destroy();
+    this.merchant = undefined;
+    this.shopStock = [];
 
     // Seed generation from the (persisted) floor seed so a resumed run rebuilds
     // the identical layout, monsters and loot rather than a fresh floor.
@@ -281,6 +290,7 @@ export class GameScene extends Phaser.Scene {
     this.buildMonsters();
     this.buildItems();
     if (this.depth >= MAX_DEPTH) this.spawnBoss();
+    else this.placeMerchant();
     this.updateFOV();
     this.refresh();
   }
@@ -441,6 +451,44 @@ export class GameScene extends Phaser.Scene {
     if (redraw) this.renderEntities();
   }
 
+  /** Place the floor's merchant in a non-spawn room with a seeded stock of wares. */
+  private placeMerchant(): void {
+    const occupied = (x: number, y: number): boolean =>
+      this.items.some((e) => e.x === x && e.y === y) ||
+      (x === this.map.stairsDown.x && y === this.map.stairsDown.y) ||
+      (x === this.map.spawn.x && y === this.map.spawn.y);
+    const candidates = this.map.rooms.filter(
+      (r) => !(r.cx === this.map.spawn.x && r.cy === this.map.spawn.y),
+    );
+    if (!candidates.length) return;
+    const room = candidates[this.rng.range(0, candidates.length - 1)];
+    let mx = room.cx;
+    let my = room.cy;
+    if (occupied(mx, my)) {
+      const free = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]
+        .map(([dx, dy]) => [mx + dx, my + dy] as [number, number])
+        .find(
+          ([ax, ay]) =>
+            ay >= 0 && ax >= 0 && ay < this.map.height && ax < this.map.width &&
+            isWalkable(this.map.tiles[ay][ax]) && !occupied(ax, ay),
+        );
+      if (!free) return;
+      [mx, my] = free;
+    }
+    // Seeded stock so a resumed floor shows the same wares.
+    this.shopStock = rollShopStock(this.depth, this.rng, 5).map((id) => ({
+      id,
+      price: itemPrice(getItem(id), this.depth),
+      sold: false,
+    }));
+    const hasHeroes = this.textures.exists('heroes') && this.atlas !== null;
+    const frame = hasHeroes ? heroAvatarFrame(this.atlas!, 'alchemist') : undefined;
+    const sprite = this.add.sprite(0, 0, hasHeroes ? 'heroes' : 'zr-px', frame).setScale(1.2).setVisible(false);
+    if (hasHeroes && this.anims.exists(heroAnim('alchemist', 'idle'))) sprite.play(heroAnim('alchemist', 'idle'));
+    this.tileLayer.add(sprite);
+    this.merchant = { x: mx, y: my, sprite };
+  }
+
   private buildPlayer(): void {
     const hasHeroes = this.textures.exists('heroes') && this.atlas !== null;
     const frame = hasHeroes ? heroAvatarFrame(this.atlas!, this.cls.hero) : undefined;
@@ -584,6 +632,10 @@ export class GameScene extends Phaser.Scene {
     if (this.map.tiles[y][x] === TileType.Door && this.tryCloseDoor(x, y)) return;
     if (!this.map.explored[y][x]) {
       this.pushLog('那里仍笼罩在黑暗中。');
+      return;
+    }
+    if (this.merchant && this.merchant.x === x && this.merchant.y === y) {
+      this.pushLog('〔此处〕一位游商歇脚于此——走近便可交易（以金币购物）。');
       return;
     }
     const visible = this.map.visible[y][x];
@@ -815,6 +867,11 @@ export class GameScene extends Phaser.Scene {
       it.sprite.setVisible(this.inView(it.x, it.y) && visible[it.y][it.x]);
       it.sprite.setPosition((it.x - this.player.x) * TILE, (it.y - this.player.y) * TILE);
     }
+    if (this.merchant) {
+      const m = this.merchant;
+      m.sprite.setVisible(this.inView(m.x, m.y) && visible[m.y][m.x]);
+      m.sprite.setPosition((m.x - this.player.x) * TILE, (m.y - this.player.y) * TILE);
+    }
     if (this.travelMarker && this.travelDest) {
       const show = this.travelPath.length > 0 && this.inView(this.travelDest.x, this.travelDest.y);
       this.travelMarker.setVisible(show);
@@ -839,6 +896,12 @@ export class GameScene extends Phaser.Scene {
     const foe = this.monsterAt(nx, ny);
     if (foe) {
       this.playerAttack(foe, dx, dy);
+      return;
+    }
+
+    // Stepping into the merchant opens the shop instead of moving onto its tile.
+    if (this.merchant && this.merchant.x === nx && this.merchant.y === ny) {
+      this.openShop();
       return;
     }
 
@@ -2166,6 +2229,45 @@ export class GameScene extends Phaser.Scene {
       this.animScale = Settings.animScale();
       this.menuOpen = false;
     });
+  }
+
+  // --- merchant / shop ---------------------------------------------------
+
+  /** Open the merchant's shop (reached by stepping into the merchant). */
+  private openShop(): void {
+    if (this.busy || this.menuOpen || this.shopView || !this.merchant) return;
+    this.stopTravel();
+    this.menuOpen = true;
+    this.shopView = new ShopView(this, this.inventory, this.shopStock, {
+      onBuy: (entry) => this.buyFromShop(entry),
+      onClose: () => {
+        this.shopView = undefined;
+        this.menuOpen = false;
+        this.persist();
+      },
+    });
+  }
+
+  /** Buy one ware: charge gold and add it to the bag (validates gold + space). */
+  private buyFromShop(entry: ShopEntry): void {
+    if (entry.sold) return;
+    if (this.inventory.gold < entry.price) {
+      this.pushLog('金币不足。');
+      return;
+    }
+    const inst = plainInstance(entry.id);
+    inst.identified = true;
+    if (!this.inventory.add(inst)) {
+      this.pushLog('背包已满，先腾出空间（可丢弃物品）。');
+      return;
+    }
+    const def = getItem(entry.id);
+    if (def.type === 'potion' || def.type === 'scroll') this.inventory.ident.identify(entry.id);
+    this.inventory.gold -= entry.price;
+    entry.sold = true;
+    this.pushLog(`你买下了${def.name}（-${entry.price} 金）。`);
+    this.updateHud();
+    this.persist();
   }
 
   // --- HUD / log ---------------------------------------------------------

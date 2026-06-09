@@ -48,6 +48,20 @@ export function rollMonsterDrop(depth: number, rng: RNG): string | null {
   return pickWeighted(NON_GOLD, rng, 1 + depth * 0.2).id;
 }
 
+/** The merchant's wares — `count` distinct item ids (no gold), weighted by depth. */
+export function rollShopStock(depth: number, rng: RNG, count: number): string[] {
+  const stock: string[] = [];
+  const used = new Set<string>();
+  let guard = 0;
+  while (stock.length < count && guard++ < 200) {
+    const it = pickWeighted(NON_GOLD, rng, 1.6 + depth * 0.15);
+    if (used.has(it.id)) continue;
+    used.add(it.id);
+    stock.push(it.id);
+  }
+  return stock;
+}
+
 /** A chest's contents (1–3 items), weighted toward better loot. */
 export function rollChestLoot(depth: number, rng: RNG): string[] {
   const count = rng.range(1, 3);
