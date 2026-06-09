@@ -3,6 +3,7 @@ import { FontFamily, GAME_WIDTH, Palette, SceneKeys, toCss } from '../config';
 import { HtmlButton } from '../ui/HtmlButton';
 import { Modal } from '../ui/Modal';
 import { SettingsView } from '../ui/SettingsView';
+import { LegacyView } from '../ui/LegacyView';
 import { SaveManager } from '../core/SaveManager';
 import { getAtlas, heroAnim, monsterAnim, spritesReady } from '../assets/atlas';
 
@@ -47,6 +48,13 @@ export class MainMenuScene extends Phaser.Scene {
     const cx = GAME_WIDTH / 2;
 
     new HtmlButton(this, GAME_WIDTH - 44, 34, '设置', () => this.openSettings(), {
+      width: 64,
+      height: 32,
+      fontSize: 14,
+      variant: 'ghost',
+    });
+    // 传承 (legacy upgrades) — the base layer hides while it's open, so no re-entry guard needed.
+    new HtmlButton(this, 44, 34, '传承', () => new LegacyView(this, () => undefined), {
       width: 64,
       height: 32,
       fontSize: 14,

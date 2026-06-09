@@ -10,6 +10,9 @@ interface EndData {
   kills: number;
   cause: string;
   bestDepth: number;
+  /** 环之碎屑 earned this run + the new total (0.3 meta-progression). */
+  shards?: number;
+  totalShards?: number;
 }
 
 export class DeathScene extends Phaser.Scene {
@@ -32,14 +35,16 @@ export class DeathScene extends Phaser.Scene {
       .text(cx, 292, '环窟收回了又一名造访者。', { fontFamily: FontFamily, fontSize: '13px', color: toCss(Palette.textMuted) })
       .setOrigin(0.5);
 
-    this.drawStats(cx, 330, [
+    const rows: Array<[string, string]> = [
       ['职业', cls.name],
       ['等级', `Lv ${data.level}`],
       ['到达楼层', `第 ${data.depth} 层`],
       ['击杀数量', `${data.kills}`],
       ['死亡原因', data.cause],
       ['最深记录', `第 ${data.bestDepth} 层`],
-    ]);
+    ];
+    if (data.shards !== undefined) rows.push(['环之碎屑', `+${data.shards}（共 ${data.totalShards ?? 0}）`]);
+    this.drawStats(cx, 330, rows);
 
     new HtmlButton(this, cx, 648, '重新开始', () => this.scene.start(SceneKeys.ClassSelect), {
       width: 260,

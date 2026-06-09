@@ -216,6 +216,15 @@ export class GameScene extends Phaser.Scene {
       const ident = new Identifier(new RNG((Math.floor(Math.random() * 0xffffffff)) >>> 0));
       this.inventory = new InventorySystem(this.player, ident);
       this.grantStartingItems(getClass(classId));
+      // Apply permanent legacy upgrades (meta-progression) at the start of a new run.
+      const up = SaveManager.getMeta().upgrades;
+      if (up.vigor) {
+        this.player.maxHp += up.vigor * 4;
+        this.player.hp = this.player.maxHp;
+      }
+      this.player.attack += up.blade;
+      if (up.purse) this.inventory.addGold(up.purse * 15);
+      for (let i = 0; i < up.supplies; i++) this.inventory.add(plainInstance('heal_potion'));
       this.kills = 0;
       this.floorSeed = Math.floor(Math.random() * 0xffffffff) >>> 0;
     }
@@ -1427,6 +1436,8 @@ export class GameScene extends Phaser.Scene {
         kills: this.kills,
         turns: this.turn,
         bestDepth: meta.bestDepth,
+        shards: meta.shardGain,
+        totalShards: meta.shards,
       }),
     );
   }
@@ -1556,6 +1567,8 @@ export class GameScene extends Phaser.Scene {
         kills: this.kills,
         cause: this.deathCause,
         bestDepth: meta.bestDepth,
+        shards: meta.shardGain,
+        totalShards: meta.shards,
       }),
     );
   }

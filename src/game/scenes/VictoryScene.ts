@@ -10,6 +10,9 @@ interface EndData {
   kills: number;
   turns: number;
   bestDepth: number;
+  /** 环之碎屑 earned this run + the new total (0.3 meta-progression). */
+  shards?: number;
+  totalShards?: number;
 }
 
 export class VictoryScene extends Phaser.Scene {
@@ -50,13 +53,15 @@ export class VictoryScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    this.drawStats(cx, 430, [
+    const rows: Array<[string, string]> = [
       ['职业', getClass(data.classId).name],
       ['等级', `Lv ${data.level}`],
       ['击杀数量', `${data.kills}`],
       ['通关回合', `${data.turns}`],
       ['最深记录', `第 ${data.bestDepth} 层`],
-    ]);
+    ];
+    if (data.shards !== undefined) rows.push(['环之碎屑', `+${data.shards}（共 ${data.totalShards ?? 0}）`]);
+    this.drawStats(cx, 430, rows);
 
     new HtmlButton(this, cx, 648, '再来一局', () => this.scene.start(SceneKeys.ClassSelect), {
       width: 260,

@@ -1,6 +1,7 @@
 import type { SerializedInstance } from '../systems/ItemInstance';
 import { EQUIP_SLOTS, type EquipSlot } from '../systems/InventorySystem';
 import { getItem } from '../data/items';
+import { shardsForRun } from './Meta';
 import type { MetaStats, RunState } from './types';
 
 /**
@@ -63,7 +64,14 @@ function migrateRun(d: Record<string, unknown>): RunState {
   return d as unknown as RunState;
 }
 
-const DEFAULT_META: MetaStats = { runs: 0, victories: 0, bestDepth: 0, totalKills: 0 };
+const DEFAULT_META: MetaStats = {
+  runs: 0,
+  victories: 0,
+  bestDepth: 0,
+  totalKills: 0,
+  shards: 0,
+  upgrades: { vigor: 0, blade: 0, purse: 0, supplies: 0 },
+};
 
 export class SaveManager {
   /** True when a resumable run is stored. */
@@ -101,20 +109,35 @@ export class SaveManager {
 
   static getMeta(): MetaStats {
     const stored = SaveManager.read<Partial<MetaStats>>(META_KEY);
-    return { ...DEFAULT_META, ...(stored ?? {}) };
+    return {
+      ...DEFAULT_META,
+      ...(stored ?? {}),
+      upgrades: { ...DEFAULT_META.upgrades, ...(stored?.upgrades ?? {}) },
+    };
   }
 
-  /** Record a finished run's outcome; this meta survives clearing the run save. */
-  static recordOutcome(depthReached: number, victory: boolean, kills: number): MetaStats {
+  /** Persist the whole meta blob (used after a legacy-upgrade purchase). */
+  static saveMeta(meta: MetaStats): void {
+    SaveManager.write(META_KEY, meta);
+  }
+
+  /**
+   * Record a finished run's outcome and award its 环之碎屑; this meta survives
+   * clearing the run save. Returns the updated meta (with the shard gain noted).
+   */
+  static recordOutcome(depthReached: number, victory: boolean, kills: number): MetaStats & { shardGain: number } {
     const meta = SaveManager.getMeta();
+    const shardGain = shardsForRun(depthReached, kills, victory);
     const next: MetaStats = {
+      ...meta,
       runs: meta.runs + 1,
       victories: meta.victories + (victory ? 1 : 0),
       bestDepth: Math.max(meta.bestDepth, depthReached),
       totalKills: meta.totalKills + kills,
+      shards: meta.shards + shardGain,
     };
     SaveManager.write(META_KEY, next);
-    return next;
+    return { ...next, shardGain };
   }
 
   // --- low-level helpers -------------------------------------------------

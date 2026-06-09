@@ -76,10 +76,22 @@ export interface SerializedFloor {
   ringOathUsed: boolean;
 }
 
+/** Permanent, purchasable legacy upgrades (0.3 meta-progression). */
+export interface MetaUpgrades {
+  vigor: number;
+  blade: number;
+  purse: number;
+  supplies: number;
+}
+
 /** Aggregate, cross-run statistics — kept across runs (cleared saves don't touch it). */
 export interface MetaStats {
   runs: number;
   victories: number;
   bestDepth: number;
   totalKills: number;
+  /** 环之碎屑: meta currency earned each run, spent on legacy upgrades (0.3). */
+  shards: number;
+  /** Purchased permanent upgrade levels, applied at the start of every run. */
+  upgrades: MetaUpgrades;
 }
