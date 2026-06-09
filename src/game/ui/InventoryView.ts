@@ -17,6 +17,7 @@ export interface InventoryHandlers {
   onUse: (item: ItemInstance) => void;
   onEquip: (item: ItemInstance) => void;
   onUnequip: (slot: EquipSlot) => void;
+  onDrop: (item: ItemInstance) => void;
   onClose: () => void;
 }
 
@@ -299,15 +300,27 @@ export class InventoryView extends Phaser.GameObjects.Container {
       y += 4;
     }
 
+    // Primary action (装备 / 使用) plus a 丢弃 to free a full bag — dropped items
+    // land at the player's feet and can be picked back up.
     const equippable = equipSlotOf(def) !== null;
+    const btnY = y + 22;
     this.dynBtns.push(
-      new HtmlButton(this.scene, GAME_WIDTH / 2, y + 22, equippable ? '装备' : '使用', () => {
+      new HtmlButton(this.scene, PX + PW / 2 - 50, btnY, equippable ? '装备' : '使用', () => {
         this.afterAction(() => (equippable ? this.handlers.onEquip(item) : this.handlers.onUse(item)));
       }, {
-        width: 200,
+        width: 156,
         height: 44,
         fontSize: 18,
         variant: 'primary',
+        layer: 'modal',
+      }),
+      new HtmlButton(this.scene, PX + PW / 2 + 90, btnY, '丢弃', () => {
+        this.afterAction(() => this.handlers.onDrop(item));
+      }, {
+        width: 76,
+        height: 44,
+        fontSize: 16,
+        variant: 'ghost',
         layer: 'modal',
       }),
     );

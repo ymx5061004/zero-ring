@@ -415,8 +415,13 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** Place an item entity on the map (nudging off an occupied tile). */
+  /** Spawn a freshly-rolled item entity on the map (drops, chest loot, floor loot). */
   private spawnItem(id: string, x: number, y: number, redraw = true): void {
+    this.placeFloorItem(rollInstance(id, this.rng), x, y, redraw);
+  }
+
+  /** Place an existing instance on the floor, nudging off an occupied tile. */
+  private placeFloorItem(inst: ItemInstance, x: number, y: number, redraw = true): void {
     let tx = x;
     let ty = y;
     if (this.items.some((e) => e.x === tx && e.y === ty)) {
@@ -429,8 +434,7 @@ export class GameScene extends Phaser.Scene {
         );
       if (free) [tx, ty] = free;
     }
-    const def = getItem(id);
-    const inst = rollInstance(id, this.rng);
+    const def = getItem(inst.defId);
     const sprite = this.add.image(0, 0, 'items', def.spriteFrame).setScale(0.85).setVisible(false);
     this.tileLayer.add(sprite);
     this.items.push({ x: tx, y: ty, inst, sprite });
@@ -1953,6 +1957,7 @@ export class GameScene extends Phaser.Scene {
       onUse: (item) => this.useItem(item),
       onEquip: (item) => this.equipItem(item),
       onUnequip: (slot) => this.unequipSlot(slot),
+      onDrop: (item) => this.dropItem(item),
       onClose: () => this.closeInventory(),
     });
   }
@@ -1988,6 +1993,15 @@ export class GameScene extends Phaser.Scene {
     if (res.message) this.pushLog(res.message);
     this.updateHud();
     if (res.ok) this.persist();
+  }
+
+  /** Drop a bag item onto the floor (frees a full bag; recoverable by walking back). */
+  private dropItem(item: ItemInstance): void {
+    const label = this.inventory.name(item);
+    this.inventory.remove(item);
+    this.placeFloorItem(item, this.player.x, this.player.y);
+    this.pushLog(`你把${label}丢在了脚边。`);
+    this.persist();
   }
 
   /**
