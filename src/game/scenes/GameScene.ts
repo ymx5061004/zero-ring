@@ -40,6 +40,9 @@ import {
 } from '../assets/atlas';
 import { EQUIP_SLOTS, InventorySystem, SLOT_LABEL, type EquipSlot } from '../systems/InventorySystem';
 import { InventoryView } from '../ui/InventoryView';
+import { GameMenu } from '../ui/GameMenu';
+import { MapView } from '../ui/MapView';
+import { SettingsView } from '../ui/SettingsView';
 import { rollChestLoot, rollMonsterDrop } from '../systems/LootSystem';
 import { equipSlotOf, getItem, type ScrollAction } from '../data/items';
 import { Identifier, plainInstance, rollInstance, type Beatitude, type ItemInstance } from '../systems/ItemInstance';
@@ -124,6 +127,8 @@ export class GameScene extends Phaser.Scene {
 
   private inventory!: InventorySystem;
   private invView?: InventoryView;
+  private mapView?: MapView;
+  private settingsView?: SettingsView;
   private menuOpen = false;
   private gameOver = false;
 
@@ -1576,7 +1581,11 @@ export class GameScene extends Phaser.Scene {
     const reach = this.rangedReach();
     if (reach <= 0) return false;
     const dist = Math.max(Math.abs(tx - this.player.x), Math.abs(ty - this.player.y));
-    if (dist <= 1 || dist > reach) return false;
+    // Exclude only orthogonally-adjacent tiles (those are a melee step). A
+    // diagonally-adjacent foe (Chebyshev 1 but Manhattan 2) has no melee path in a
+    // 4-direction game, so it must remain a valid ranged target.
+    const manhattan = Math.abs(tx - this.player.x) + Math.abs(ty - this.player.y);
+    if (manhattan <= 1 || dist > reach) return false;
     if (!this.map.visible[ty][tx]) return false;
     return hasLineOfSight(this.player.x, this.player.y, tx, ty, (x, y) => this.blocksShot(x, y));
   }
@@ -2092,8 +2101,41 @@ export class GameScene extends Phaser.Scene {
   }
 
   private openMenu(): void {
-    this.persist();
-    this.scene.start(SceneKeys.MainMenu);
+    if (this.busy || this.menuOpen) return;
+    this.stopTravel();
+    this.menuOpen = true;
+    new GameMenu(this, {
+      onResume: () => {
+        this.menuOpen = false;
+      },
+      onMap: () => this.openMap(),
+      onSettings: () => this.openSettings(),
+      onQuit: () => {
+        this.persist();
+        this.scene.start(SceneKeys.MainMenu);
+      },
+    });
+  }
+
+  /** Full-floor minimap (explored only). Opened from the in-game menu. */
+  private openMap(): void {
+    if (this.mapView) return;
+    this.menuOpen = true;
+    this.mapView = new MapView(this, this.map, this.player, this.depth, () => {
+      this.mapView = undefined;
+      this.menuOpen = false;
+    });
+  }
+
+  /** Settings mid-run, reusing the menu overlay from the title screen. */
+  private openSettings(): void {
+    if (this.settingsView) return;
+    this.menuOpen = true;
+    this.settingsView = new SettingsView(this, () => {
+      this.settingsView = undefined;
+      this.animScale = Settings.animScale();
+      this.menuOpen = false;
+    });
   }
 
   // --- HUD / log ---------------------------------------------------------

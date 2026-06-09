@@ -71,10 +71,14 @@ export const MONSTERS: readonly MonsterDef[] = [
     description: '背甲如镜的巨虫，能弹开大半攻击，每隔一回合才动，却势大力沉。',
   },
   {
-    id: 'mossarcher', name: '苔藓弓手', hp: 11, attack: 6, defense: 2, agility: 5,
-    exp: 8, sightRange: 8, aiType: 'ranged', spriteFrame: 40,
-    tags: ['plant'], traits: ['keepsDistance', 'poisonAttack'], resist: { poison: 0.5 },
-    description: '被苔藓寄生的猎手，以毒孢为箭远远袭来，并刻意与你保持距离。',
+    // Was a mushroom-sprited "moss archer" — a fungus shooting from range read as
+    // odd, so it is now a venom-spitting cave spider (spider sprite, frame 20),
+    // for which keeping its distance and spitting venom is intuitive. Ranged +
+    // poison behaviour is unchanged; id kept stable for saves.
+    id: 'mossarcher', name: '吐丝毒蛛', hp: 11, attack: 6, defense: 2, agility: 5,
+    exp: 8, sightRange: 8, aiType: 'ranged', spriteFrame: 20,
+    tags: ['beast'], traits: ['keepsDistance', 'poisonAttack'], resist: { poison: 0.5 },
+    description: '蛰伏窟壁的毒蛛，远远吐出黏稠毒丝，得手便迅速退开，与你保持距离。',
   },
   {
     id: 'bonehound', name: '裂骨犬', hp: 14, attack: 7, defense: 2, agility: 7,
