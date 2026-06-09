@@ -529,22 +529,28 @@ export class GameScene extends Phaser.Scene {
     const zone = this.add.zone(GAME_WIDTH / 2, top + h / 2, GAME_WIDTH, h).setInteractive().setDepth(2);
     let downX = 0;
     let downY = 0;
+    // Pointer x/y are in canvas-buffer pixels (high-DPI buffer is GAME_*×SUPERSAMPLE),
+    // so map back to the 390×844 design space via the camera before any tile math.
+    const logical = (p: Phaser.Input.Pointer): Phaser.Math.Vector2 =>
+      this.cameras.main.getWorldPoint(p.x, p.y);
     zone.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      downX = p.x;
-      downY = p.y;
+      const w = logical(p);
+      downX = w.x;
+      downY = w.y;
     });
     zone.on('pointerup', (p: Phaser.Input.Pointer) => {
       if (this.menuOpen || this.gameOver || this.aiming) return;
+      const w = logical(p);
       // Only treat clearly-moved pointers as drags; a generous slop keeps touch
       // taps (which always jitter a little) from being ignored.
-      if (Math.abs(p.x - downX) > 24 || Math.abs(p.y - downY) > 24) return;
+      if (Math.abs(w.x - downX) > 24 || Math.abs(w.y - downY) > 24) return;
       // A tap while moving / travelling cancels the current trip.
       if (this.busy) {
         if (this.travelPath.length) this.stopTravel();
         return;
       }
-      const tx = this.player.x + Math.round((p.x - PLAY_CX) / TILE);
-      const ty = this.player.y + Math.round((p.y - PLAY_CY) / TILE);
+      const tx = this.player.x + Math.round((w.x - PLAY_CX) / TILE);
+      const ty = this.player.y + Math.round((w.y - PLAY_CY) / TILE);
       // Long-press inspects the tile; a quick tap walks there.
       if (p.upTime - p.downTime > 380) this.describeTile(tx, ty);
       else this.travelTo(tx, ty);
