@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { FontFamily, GAME_HEIGHT, GAME_WIDTH, Palette, SceneKeys, toCss } from '../config';
-import { Button } from '../ui/Button';
+import { HtmlButton } from '../ui/HtmlButton';
 import { Modal } from '../ui/Modal';
 import { CONTROLS_TOP, MobileControls } from '../ui/MobileControls';
 import { burst, floatNumber, playEffect } from '../ui/Fx';
@@ -399,7 +399,12 @@ export class GameScene extends Phaser.Scene {
       .setOrigin(0, 0.5);
     hud.add(this.statusText);
 
-    new Button(this, 360, 20, '菜单', () => this.openMenu(), { width: 52, height: 26, fontSize: 13 }).setDepth(21);
+    new HtmlButton(this, 360, 20, '菜单', () => this.openMenu(), {
+      width: 52,
+      height: 26,
+      fontSize: 13,
+      variant: 'ghost',
+    });
   }
 
   private buildControls(): void {
@@ -447,7 +452,9 @@ export class GameScene extends Phaser.Scene {
     });
     zone.on('pointerup', (p: Phaser.Input.Pointer) => {
       if (this.menuOpen || this.gameOver) return;
-      if (Math.abs(p.x - downX) > 16 || Math.abs(p.y - downY) > 16) return; // ignore drags
+      // Only treat clearly-moved pointers as drags; a generous slop keeps touch
+      // taps (which always jitter a little) from being ignored.
+      if (Math.abs(p.x - downX) > 24 || Math.abs(p.y - downY) > 24) return;
       // A tap while moving / travelling cancels the current trip.
       if (this.busy) {
         if (this.travelPath.length) this.stopTravel();

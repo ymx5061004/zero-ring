@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { FontFamily, GAME_HEIGHT, GAME_WIDTH, Palette, SceneKeys, toCss } from '../config';
-import { Button } from '../ui/Button';
+import { HtmlButton } from '../ui/HtmlButton';
 import {
   effectAnim,
   getAtlas,
@@ -76,10 +76,11 @@ export class SpriteShowcaseScene extends Phaser.Scene {
       })
       .setOrigin(0.5);
 
-    new Button(this, 48, 34, '返回', () => this.scene.start(SceneKeys.MainMenu), {
+    new HtmlButton(this, 48, 34, '返回', () => this.scene.start(SceneKeys.MainMenu), {
       width: 72,
       height: 36,
       fontSize: 15,
+      variant: 'ghost',
     });
   }
 

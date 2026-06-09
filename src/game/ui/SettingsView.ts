@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { FontFamily, GAME_HEIGHT, GAME_WIDTH, Palette, toCss } from '../config';
-import { Button } from './Button';
+import { HtmlButton } from './HtmlButton';
+import { blockUi, unblockUi } from './UiLayer';
 import { Settings, type AnimSpeed } from '../core/Settings';
 
 const PX = 30;
@@ -21,11 +22,18 @@ const SPEEDS: Array<[AnimSpeed, string]> = [
 export class SettingsView extends Phaser.GameObjects.Container {
   private readonly content: Phaser.GameObjects.Container;
   private readonly onClose: () => void;
+  private closed = false;
+  private closeBtn?: HtmlButton;
+  /** DOM toggle/segment buttons, recreated on each rebuild(). */
+  private dynBtns: HtmlButton[] = [];
 
   constructor(scene: Phaser.Scene, onClose: () => void) {
     super(scene, 0, 0);
     this.setDepth(1200);
     this.onClose = onClose;
+    // Canvas overlay below the DOM UI layer — block it so menu buttons behind the
+    // backdrop aren't clickable while settings are open.
+    blockUi();
 
     const dim = scene.add.graphics();
     dim.fillStyle(Palette.black, 0.78);
@@ -46,7 +54,12 @@ export class SettingsView extends Phaser.GameObjects.Container {
         .text(GAME_WIDTH / 2, PY + 30, '设置', { fontFamily: FontFamily, fontSize: '22px', color: toCss(Palette.accent), fontStyle: 'bold' })
         .setOrigin(0.5),
     );
-    this.add(new Button(scene, GAME_WIDTH / 2, PY + PH - 38, '关闭', () => this.close(), { width: 200, height: 46, fontSize: 18 }));
+    this.closeBtn = new HtmlButton(scene, GAME_WIDTH / 2, PY + PH - 38, '关闭', () => this.close(), {
+      width: 200,
+      height: 46,
+      fontSize: 18,
+      layer: 'modal',
+    });
 
     this.content = scene.add.container(0, 0);
     this.add(this.content);
@@ -59,6 +72,9 @@ export class SettingsView extends Phaser.GameObjects.Container {
 
   private rebuild(): void {
     this.content.removeAll(true);
+    // Tear down the previous round of DOM toggles before recreating them.
+    this.dynBtns.forEach((b) => b.destroy());
+    this.dynBtns = [];
     const add = (o: Phaser.GameObjects.GameObject): void => {
       this.content.add(o);
     };
@@ -69,46 +85,50 @@ export class SettingsView extends Phaser.GameObjects.Container {
 
     // Sound (state only — no audio ships yet).
     label(PX + 24, PY + 86, '音效');
-    add(this.toggle(PX + PW - 80, PY + 86, s.sound, () => { Settings.set({ sound: !s.sound }); this.rebuild(); }));
+    this.toggle(PX + PW - 80, PY + 86, s.sound, () => { Settings.set({ sound: !s.sound }); this.rebuild(); });
 
     // Animation speed.
     label(PX + 24, PY + 140, '动画速度');
     SPEEDS.forEach(([key, name], i) => {
-      add(this.segButton(PX + 82 + i * 78, PY + 182, name, s.animSpeed === key, () => { Settings.set({ animSpeed: key }); this.rebuild(); }));
+      this.segButton(PX + 82 + i * 78, PY + 182, name, s.animSpeed === key, () => { Settings.set({ animSpeed: key }); this.rebuild(); });
     });
 
     // Auto-pickup gold.
     label(PX + 24, PY + 244, '自动拾取金币');
-    add(this.toggle(PX + PW - 80, PY + 244, s.autoPickupGold, () => { Settings.set({ autoPickupGold: !s.autoPickupGold }); this.rebuild(); }));
+    this.toggle(PX + PW - 80, PY + 244, s.autoPickupGold, () => { Settings.set({ autoPickupGold: !s.autoPickupGold }); this.rebuild(); });
   }
 
-  private toggle(x: number, y: number, value: boolean, onTap: () => void): Button {
-    return new Button(this.scene, x, y, value ? '开' : '关', onTap, {
-      width: 64,
-      height: 34,
-      fontSize: 15,
-      fill: value ? 0x2c4a36 : Palette.panelDown,
-      fillHover: value ? 0x36603f : Palette.panelLight,
-      border: value ? Palette.success : Palette.border,
-      borderHover: value ? Palette.success : Palette.borderBright,
-      textColor: value ? Palette.text : Palette.textDim,
-    });
+  private toggle(x: number, y: number, value: boolean, onTap: () => void): void {
+    this.dynBtns.push(
+      new HtmlButton(this.scene, x, y, value ? '开' : '关', onTap, {
+        width: 64,
+        height: 34,
+        fontSize: 15,
+        variant: value ? 'on' : 'default',
+        layer: 'modal',
+      }),
+    );
   }
 
-  private segButton(x: number, y: number, name: string, selected: boolean, onTap: () => void): Button {
-    return new Button(this.scene, x, y, name, onTap, {
-      width: 70,
-      height: 34,
-      fontSize: 15,
-      fill: selected ? Palette.accentDim : Palette.panelDown,
-      fillHover: selected ? 0x8a7440 : Palette.panelLight,
-      border: selected ? Palette.accent : Palette.border,
-      borderHover: Palette.accent,
-      textColor: selected ? Palette.text : Palette.textDim,
-    });
+  private segButton(x: number, y: number, name: string, selected: boolean, onTap: () => void): void {
+    this.dynBtns.push(
+      new HtmlButton(this.scene, x, y, name, onTap, {
+        width: 70,
+        height: 34,
+        fontSize: 15,
+        variant: selected ? 'primary' : 'default',
+        layer: 'modal',
+      }),
+    );
   }
 
   private close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.closeBtn?.destroy();
+    this.dynBtns.forEach((b) => b.destroy());
+    this.dynBtns = [];
+    unblockUi();
     this.onClose();
   }
 }

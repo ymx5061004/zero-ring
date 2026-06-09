@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { FontFamily, GAME_WIDTH, Palette, SceneKeys, toCss } from '../config';
-import { Button } from '../ui/Button';
+import { HtmlButton } from '../ui/HtmlButton';
 import { getClass, type ClassId } from '../data/classes';
 
 interface EndData {
@@ -58,12 +58,15 @@ export class VictoryScene extends Phaser.Scene {
       ['最深记录', `第 ${data.bestDepth} 层`],
     ]);
 
-    new Button(this, cx, 648, '再来一局', () => this.scene.start(SceneKeys.ClassSelect), {
-      fill: Palette.accentDim,
-      fillHover: 0x8a7440,
-      border: Palette.accentBright,
+    new HtmlButton(this, cx, 648, '再来一局', () => this.scene.start(SceneKeys.ClassSelect), {
+      width: 260,
+      height: 52,
+      variant: 'primary',
     });
-    new Button(this, cx, 712, '返回主菜单', () => this.scene.start(SceneKeys.MainMenu));
+    new HtmlButton(this, cx, 712, '返回主菜单', () => this.scene.start(SceneKeys.MainMenu), {
+      width: 260,
+      height: 52,
+    });
   }
 
   /** A bright, slowly turning ring with an outward shimmer. */

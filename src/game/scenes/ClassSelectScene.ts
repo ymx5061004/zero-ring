@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { FontFamily, GAME_HEIGHT, GAME_WIDTH, Palette, SceneKeys, toCss } from '../config';
-import { Button } from '../ui/Button';
+import { HtmlButton } from '../ui/HtmlButton';
+import { uiStage } from '../ui/UiLayer';
 import { CLASSES, type CharClass } from '../data/classes';
 import {
   getAtlas,
@@ -36,11 +37,7 @@ export class ClassSelectScene extends Phaser.Scene {
 
   private list!: Phaser.GameObjects.Container;
   private scrollMin = 0;
-  private dragging = false;
-  private dragged = false;
-  private lastPy = 0;
-  private dragStartY = 0;
-  private startBtn!: Button;
+  private startBtn!: HtmlButton;
 
   constructor() {
     super(SceneKeys.ClassSelect);
@@ -55,7 +52,7 @@ export class ClassSelectScene extends Phaser.Scene {
     this.list = this.add.container(CARD_X + CARD_W / 2, LIST_TOP).setDepth(1);
     CLASSES.forEach((cls, i) => {
       const localY = i * (CARD_H + CARD_GAP) + CARD_H / 2;
-      this.cardRedraws.push(this.makeCard(cls, i, localY));
+      this.cardRedraws.push(this.makeCard(cls, localY));
     });
     const totalH = CLASSES.length * (CARD_H + CARD_GAP) - CARD_GAP;
     this.scrollMin = LIST_TOP - Math.max(0, totalH - VIEW_H);
@@ -105,11 +102,12 @@ export class ClassSelectScene extends Phaser.Scene {
       .setOrigin(0.5)
       .setDepth(11);
 
-    new Button(this, 42, 30, '返回', () => this.scene.start(SceneKeys.MainMenu), {
+    new HtmlButton(this, 42, 30, '返回', () => this.scene.start(SceneKeys.MainMenu), {
       width: 60,
       height: 32,
       fontSize: 14,
-    }).setDepth(12);
+      variant: 'ghost',
+    });
 
     // Footer.
     const footer = this.add.graphics().setDepth(10);
@@ -123,20 +121,17 @@ export class ClassSelectScene extends Phaser.Scene {
       .setInteractive()
       .setDepth(10);
 
-    this.startBtn = new Button(this, cx, LIST_BOTTOM + 56, '开始冒险', () => this.startGame(), {
+    this.startBtn = new HtmlButton(this, cx, LIST_BOTTOM + 56, '开始冒险', () => this.startGame(), {
       width: 300,
       height: 52,
       fontSize: 22,
-      fill: Palette.accentDim,
-      fillHover: 0x8a7440,
-      border: Palette.accent,
+      variant: 'primary',
     });
-    this.startBtn.setDepth(12);
   }
 
   // --- cards -------------------------------------------------------------
 
-  private makeCard(cls: CharClass, index: number, localY: number): (selected: boolean) => void {
+  private makeCard(cls: CharClass, localY: number): (selected: boolean) => void {
     const card = this.add.container(0, localY);
     const hw = CARD_W / 2;
     const hh = CARD_H / 2;
@@ -232,11 +227,9 @@ export class ClassSelectScene extends Phaser.Scene {
         .setOrigin(0, 0.5),
     );
 
+    // Selection is handled by a native DOM hit area over the card (see
+    // enableScroll); the canvas card is just the visual.
     card.setSize(CARD_W, CARD_H);
-    card.setInteractive(new Phaser.Geom.Rectangle(-hw, -hh, CARD_W, CARD_H), Phaser.Geom.Rectangle.Contains);
-    card.on('pointerup', () => {
-      if (!this.dragged) this.select(index);
-    });
     this.list.add(card);
 
     const redraw = (selected: boolean): void => {
@@ -301,27 +294,54 @@ export class ClassSelectScene extends Phaser.Scene {
 
   // --- scrolling ---------------------------------------------------------
 
+  /**
+   * The card list scrolls and selects entirely through DOM: a native-scrolling
+   * overlay (perfect touch momentum, no canvas drag heuristics) holds a
+   * transparent hit button over each card. The canvas list visual is kept in
+   * sync with the overlay's scroll position.
+   */
   private enableScroll(): void {
-    if (this.scrollMin >= LIST_TOP) return; // everything fits
-
+    const totalH = CLASSES.length * (CARD_H + CARD_GAP) - CARD_GAP;
     const clampY = (v: number): number => Phaser.Math.Clamp(v, this.scrollMin, LIST_TOP);
-    this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      this.dragging = true;
-      this.dragged = false;
-      this.lastPy = p.y;
-      this.dragStartY = p.y;
+    const stage = uiStage(this, 'base');
+
+    const scroller = document.createElement('div');
+    scroller.className = 'cs-scroller';
+    scroller.style.left = `${CARD_X}px`;
+    scroller.style.top = `${LIST_TOP}px`;
+    scroller.style.width = `${CARD_W}px`;
+    scroller.style.height = `${VIEW_H}px`;
+
+    const inner = document.createElement('div');
+    inner.className = 'cs-scroller-inner';
+    inner.style.height = `${Math.max(totalH, VIEW_H)}px`;
+    scroller.appendChild(inner);
+
+    CLASSES.forEach((_, i) => {
+      const hit = document.createElement('button');
+      hit.type = 'button';
+      hit.className = 'ui-btn ui-btn--hit';
+      hit.style.left = '0px';
+      hit.style.top = `${i * (CARD_H + CARD_GAP)}px`;
+      hit.style.width = `${CARD_W}px`;
+      hit.style.height = `${CARD_H}px`;
+      hit.addEventListener('click', (e) => {
+        e.preventDefault();
+        this.select(i);
+      });
+      inner.appendChild(hit);
     });
-    this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
-      if (!this.dragging) return;
-      if (Math.abs(p.y - this.dragStartY) > 14) this.dragged = true;
-      this.list.y = clampY(this.list.y + (p.y - this.lastPy));
-      this.lastPy = p.y;
+
+    // Mirror native scroll onto the canvas list (no canvas pointer handling).
+    scroller.addEventListener('scroll', () => {
+      this.list.y = clampY(LIST_TOP - scroller.scrollTop);
     });
-    this.input.on('pointerup', () => (this.dragging = false));
-    this.input.on('pointerupoutside', () => (this.dragging = false));
-    this.input.on('wheel', (_p: Phaser.Input.Pointer, _o: unknown, _dx: number, dy: number) => {
-      this.list.y = clampY(this.list.y - dy * 0.5);
-    });
+
+    stage.appendChild(scroller);
+
+    const cleanup = (): void => scroller.remove();
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, cleanup);
+    this.events.once(Phaser.Scenes.Events.DESTROY, cleanup);
   }
 
   private startGame(): void {

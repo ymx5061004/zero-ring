@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { FontFamily, GAME_WIDTH, Palette, SceneKeys, toCss } from '../config';
-import { Button } from '../ui/Button';
+import { HtmlButton } from '../ui/HtmlButton';
 import { Modal } from '../ui/Modal';
 import { SettingsView } from '../ui/SettingsView';
 import { SaveManager } from '../core/SaveManager';
@@ -46,7 +46,12 @@ export class MainMenuScene extends Phaser.Scene {
     this.settingsView = undefined;
     const cx = GAME_WIDTH / 2;
 
-    new Button(this, GAME_WIDTH - 44, 34, '设置', () => this.openSettings(), { width: 64, height: 32, fontSize: 14 });
+    new HtmlButton(this, GAME_WIDTH - 44, 34, '设置', () => this.openSettings(), {
+      width: 64,
+      height: 32,
+      fontSize: 14,
+      variant: 'ghost',
+    });
 
     this.drawEmblem(cx, 178);
 
@@ -68,21 +73,29 @@ export class MainMenuScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     // --- Primary actions -------------------------------------------------
-    new Button(this, cx, 440, '开始游戏', () => this.scene.start(SceneKeys.ClassSelect), {
-      fill: Palette.accentDim,
-      fillHover: 0x8a7440,
-      border: Palette.accent,
-      textColor: Palette.text,
+    new HtmlButton(this, cx, 440, '开始游戏', () => this.scene.start(SceneKeys.ClassSelect), {
+      width: 260,
+      height: 52,
+      variant: 'primary',
     });
 
     const run = SaveManager.loadRun();
     const continueLabel = run ? `继续游戏 · 第 ${run.depth} 层` : '继续游戏';
-    new Button(this, cx, 506, continueLabel, () => this.scene.start(SceneKeys.Game, { resume: true }), {
+    new HtmlButton(this, cx, 506, continueLabel, () => this.scene.start(SceneKeys.Game, { resume: true }), {
+      width: 260,
+      height: 52,
       fontSize: run ? 18 : 20,
-    }).setEnabled(run !== null);
+      disabled: run === null,
+    });
 
-    new Button(this, cx, 572, '帮助', () => new Modal(this, '如何游玩', HELP_TEXT));
-    new Button(this, cx, 638, '关于', () => new Modal(this, '关于本作', ABOUT_TEXT));
+    new HtmlButton(this, cx, 572, '帮助', () => new Modal(this, '如何游玩', HELP_TEXT), {
+      width: 260,
+      height: 52,
+    });
+    new HtmlButton(this, cx, 638, '关于', () => new Modal(this, '关于本作', ABOUT_TEXT), {
+      width: 260,
+      height: 52,
+    });
 
     this.buildShowcaseStrip(cx);
 
@@ -105,10 +118,11 @@ export class MainMenuScene extends Phaser.Scene {
 
   /** A live strip of generated sprites + a link to the full gallery. */
   private buildShowcaseStrip(cx: number): void {
-    new Button(this, cx, 690, '素材图鉴', () => this.scene.start(SceneKeys.Showcase), {
+    new HtmlButton(this, cx, 690, '素材图鉴', () => this.scene.start(SceneKeys.Showcase), {
       width: 150,
       height: 38,
       fontSize: 15,
+      variant: 'ghost',
     });
 
     const atlas = getAtlas(this);

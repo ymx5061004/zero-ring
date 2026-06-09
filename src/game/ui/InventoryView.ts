@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { FontFamily, GAME_HEIGHT, GAME_WIDTH, Palette, toCss } from '../config';
-import { Button } from './Button';
+import { HtmlButton } from './HtmlButton';
+import { blockUi, unblockUi } from './UiLayer';
 import type { EquipSlot, InventorySystem } from '../systems/InventorySystem';
 import {
   equipSlotOf,
@@ -69,12 +70,18 @@ export class InventoryView extends Phaser.GameObjects.Container {
   private readonly content: Phaser.GameObjects.Container;
   private selected: ItemDef | null = null;
   private alive = true;
+  /** Persistent DOM buttons (close ✕ / 关闭返回). */
+  private staticBtns: HtmlButton[] = [];
+  /** DOM hit/action buttons recreated on each rebuild() (slots, cells, action). */
+  private dynBtns: HtmlButton[] = [];
 
   constructor(scene: Phaser.Scene, inv: InventorySystem, handlers: InventoryHandlers) {
     super(scene, 0, 0);
     this.setDepth(1000);
     this.inv = inv;
     this.handlers = handlers;
+    // Canvas overlay below the DOM layer — hide the in-game base buttons behind it.
+    blockUi();
 
     const dim = scene.add.graphics();
     dim.fillStyle(Palette.black, 0.8);
@@ -95,8 +102,10 @@ export class InventoryView extends Phaser.GameObjects.Container {
         .setOrigin(0, 0.5),
     );
 
-    this.add(new Button(scene, PX + PW - 28, PY + 28, '✕', () => this.handlers.onClose(), { width: 38, height: 32, fontSize: 18 }));
-    this.add(new Button(scene, GAME_WIDTH / 2, PY + PH - 34, '关闭返回', () => this.handlers.onClose(), { width: 240, height: 46, fontSize: 18 }));
+    this.staticBtns.push(
+      new HtmlButton(scene, PX + PW - 28, PY + 28, '✕', () => this.handlers.onClose(), { width: 40, height: 36, fontSize: 18, variant: 'ghost', layer: 'modal' }),
+      new HtmlButton(scene, GAME_WIDTH / 2, PY + PH - 34, '关闭返回', () => this.handlers.onClose(), { width: 240, height: 46, fontSize: 18, layer: 'modal' }),
+    );
 
     this.content = scene.add.container(0, 0);
     this.add(this.content);
@@ -109,6 +118,9 @@ export class InventoryView extends Phaser.GameObjects.Container {
 
   private rebuild(): void {
     this.content.removeAll(true);
+    // Recreate the DOM hit/action buttons that track the (rebuilt) canvas content.
+    this.dynBtns.forEach((b) => b.destroy());
+    this.dynBtns = [];
     const add = (o: Phaser.GameObjects.GameObject): void => {
       this.content.add(o);
     };
@@ -176,9 +188,10 @@ export class InventoryView extends Phaser.GameObjects.Container {
 
     add(this.scene.add.text(cx, cy + size / 2 + 9, label, { fontFamily: FontFamily, fontSize: '11px', color: toCss(Palette.textDim) }).setOrigin(0.5));
 
-    const zone = this.scene.add.zone(cx, cy, size, size).setInteractive();
-    zone.on('pointerup', onTap);
-    add(zone);
+    // Native DOM hit area over the canvas slot.
+    this.dynBtns.push(
+      new HtmlButton(this.scene, cx, cy, '', onTap, { width: size, height: size, variant: 'hit', layer: 'modal' }),
+    );
   }
 
   private makeCell(add: (o: Phaser.GameObjects.GameObject) => void, cx: number, cy: number, item: ItemDef | null): void {
@@ -199,12 +212,12 @@ export class InventoryView extends Phaser.GameObjects.Container {
           .text(cx, cy + CELL / 2 - 9, item.name, { fontFamily: FontFamily, fontSize: '9px', color: toCss(selected ? Palette.text : Palette.textDim) })
           .setOrigin(0.5),
       );
-      const zone = this.scene.add.zone(cx, cy, CELL, CELL).setInteractive();
-      zone.on('pointerup', () => {
-        this.selected = this.selected === item ? null : item;
-        this.rebuild();
-      });
-      add(zone);
+      this.dynBtns.push(
+        new HtmlButton(this.scene, cx, cy, '', () => {
+          this.selected = this.selected === item ? null : item;
+          this.rebuild();
+        }, { width: CELL, height: CELL, variant: 'hit', layer: 'modal' }),
+      );
     }
   }
 
@@ -250,16 +263,15 @@ export class InventoryView extends Phaser.GameObjects.Container {
     }
 
     const equippable = equipSlotOf(item.type) !== null;
-    add(
-      new Button(this.scene, GAME_WIDTH / 2, top + 134, equippable ? '装备' : '使用', () => {
+    this.dynBtns.push(
+      new HtmlButton(this.scene, GAME_WIDTH / 2, top + 134, equippable ? '装备' : '使用', () => {
         this.afterAction(() => (equippable ? this.handlers.onEquip(item) : this.handlers.onUse(item)));
       }, {
         width: 200,
         height: 44,
         fontSize: 18,
-        fill: Palette.accentDim,
-        fillHover: 0x8a7440,
-        border: Palette.accent,
+        variant: 'primary',
+        layer: 'modal',
       }),
     );
   }
@@ -274,6 +286,11 @@ export class InventoryView extends Phaser.GameObjects.Container {
 
   override destroy(fromScene?: boolean): void {
     this.alive = false;
+    this.staticBtns.forEach((b) => b.destroy());
+    this.dynBtns.forEach((b) => b.destroy());
+    this.staticBtns = [];
+    this.dynBtns = [];
+    unblockUi();
     super.destroy(fromScene);
   }
 }

@@ -1,6 +1,6 @@
 import Phaser from 'phaser';
 import { FontFamily, GAME_HEIGHT, GAME_WIDTH, Palette, toCss } from '../config';
-import { Button } from './Button';
+import { HtmlButton } from './HtmlButton';
 
 export interface MobileControlsHandlers {
   onWait: () => void;
@@ -52,7 +52,8 @@ export class MobileControls extends Phaser.GameObjects.Container {
     const totalW = actions.length * aw + (actions.length - 1) * gap;
     let ax = (GAME_WIDTH - totalW) / 2 + aw / 2;
     for (const [label, cb] of actions) {
-      this.add(new Button(scene, ax, CONTROLS_TOP + 58, label, cb, { width: aw, height: 46, fontSize: 16 }));
+      // Real DOM buttons (base layer) — native taps, no canvas hit-testing.
+      new HtmlButton(scene, ax, CONTROLS_TOP + 58, label, cb, { width: aw, height: 46, fontSize: 16 });
       ax += aw + gap;
     }
 

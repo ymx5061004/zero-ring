@@ -1,6 +1,7 @@
 import Phaser from 'phaser';
 import { FontFamily, GAME_HEIGHT, GAME_WIDTH, Palette, toCss } from '../config';
-import { Button } from './Button';
+import { HtmlButton } from './HtmlButton';
+import { blockUi, unblockUi } from './UiLayer';
 
 /**
  * A simple centred modal dialog (dim backdrop + titled panel + body text +
@@ -8,9 +9,15 @@ import { Button } from './Button';
  * Tapping the backdrop or the 关闭 button dismisses it.
  */
 export class Modal extends Phaser.GameObjects.Container {
+  private closed = false;
+  private closeBtn?: HtmlButton;
+
   constructor(scene: Phaser.Scene, title: string, body: string) {
     super(scene, 0, 0);
     this.setDepth(1000);
+    // This canvas overlay sits below the DOM UI layer; block it so taps don't
+    // fall through to the menu buttons behind the dim backdrop.
+    blockUi();
 
     const cx = GAME_WIDTH / 2;
     const cy = GAME_HEIGHT / 2;
@@ -59,13 +66,14 @@ export class Modal extends Phaser.GameObjects.Container {
       })
       .setOrigin(0, 0);
 
-    const close = new Button(scene, cx, top + panelH - 38, '关闭', () => this.close(), {
+    this.closeBtn = new HtmlButton(scene, cx, top + panelH - 38, '关闭', () => this.close(), {
       width: panelW - 56,
       height: 46,
       fontSize: 18,
+      layer: 'modal',
     });
 
-    this.add([dim, panel, titleText, rule, bodyText, close]);
+    this.add([dim, panel, titleText, rule, bodyText]);
     scene.add.existing(this);
 
     // Gentle fade-in.
@@ -74,6 +82,10 @@ export class Modal extends Phaser.GameObjects.Container {
   }
 
   private close(): void {
+    if (this.closed) return;
+    this.closed = true;
+    this.closeBtn?.destroy();
+    unblockUi();
     this.scene.tweens.add({
       targets: this,
       alpha: 0,

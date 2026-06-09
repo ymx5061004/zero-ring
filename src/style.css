@@ -48,6 +48,144 @@ body {
   touch-action: none;
 }
 
+/* --- HTML UI overlay: real DOM widgets in the game's 390×844 logical space ---
+   The overlay tracks the canvas exactly (see UiLayer.ts) and is click-through;
+   only the widgets inside capture input, so taps on empty space reach the game. */
+.ui-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 10;
+}
+
+.ui-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 390px;
+  height: 844px;
+  transform-origin: 0 0;
+}
+
+.ui-btn {
+  position: absolute;
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border-radius: 12px;
+  border: 2px solid #2c2c3c;
+  background: #15151e;
+  color: #e8e6df;
+  font-family: inherit;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1;
+  letter-spacing: 0.5px;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  transition: transform 0.08s ease, background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.ui-btn:hover {
+  background: #1f1f2b;
+  border-color: #c8a45a;
+}
+
+.ui-btn:active {
+  background: #101019;
+  transform: scale(0.96);
+}
+
+.ui-btn:disabled {
+  background: #07070b;
+  border-color: #2c2c3c;
+  color: #5d5b54;
+  opacity: 0.55;
+  cursor: default;
+}
+
+/* Primary call-to-action (e.g. 开始游戏): weathered-gold fill. */
+.ui-btn--primary {
+  background: #7a6638;
+  border-color: #c8a45a;
+  color: #f4efe4;
+}
+.ui-btn--primary:hover {
+  background: #8a7440;
+  border-color: #e6c179;
+}
+.ui-btn--primary:active {
+  background: #6a5830;
+}
+
+/* Quiet secondary action (e.g. 设置 / 素材图鉴). */
+.ui-btn--ghost {
+  background: rgba(21, 21, 30, 0.6);
+  border-color: #2c2c3c;
+  font-weight: 600;
+}
+.ui-btn--ghost:hover {
+  background: #1f1f2b;
+  border-color: #44445a;
+}
+
+/* "On" state for a toggle (e.g. 音效 开): muted green. */
+.ui-btn--on {
+  background: #2c4a36;
+  border-color: #5fa06e;
+  color: #e8e6df;
+}
+.ui-btn--on:hover {
+  background: #36603f;
+  border-color: #5fa06e;
+}
+
+/* Invisible hit area laid over a canvas-rendered control (cards, inventory
+   cells, settings toggles). Captures native taps; the canvas draws the visuals.
+   A faint feedback tint on press confirms the touch registered. */
+.ui-btn--hit {
+  background: transparent;
+  border: none;
+  border-radius: 8px;
+  padding: 0;
+}
+.ui-btn--hit:hover {
+  background: rgba(200, 164, 90, 0.06);
+}
+.ui-btn--hit:active {
+  background: rgba(200, 164, 90, 0.14);
+  transform: none;
+}
+.ui-btn--hit:disabled {
+  background: transparent;
+  opacity: 1;
+}
+
+/* Native-scrolling overlay for the class-select card list (logical-space px). */
+.cs-scroller {
+  position: absolute;
+  pointer-events: auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior: contain;
+  scrollbar-width: none; /* Firefox */
+}
+.cs-scroller::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none; /* WebKit */
+}
+.cs-scroller-inner {
+  position: relative;
+  width: 100%;
+}
+
 /* --- landscape hint: suggest portrait on phones held sideways --------- */
 #rotate-hint {
   display: none;

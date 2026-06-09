@@ -73,6 +73,14 @@ window.addEventListener('load', refreshScale);
 window.addEventListener('orientationchange', () => window.setTimeout(refreshScale, 150));
 window.setTimeout(refreshScale, 250);
 
+// Recompute the canvas bounds whenever the layout settles or changes (late font
+// load, safe-area insets, browser UI showing/hiding). A stale bounds rectangle is
+// the usual cause of taps landing a little off, so we keep it fresh at the source.
+const gameRoot = document.getElementById('game-root');
+if (gameRoot && 'ResizeObserver' in window) {
+  new ResizeObserver(() => refreshScale()).observe(gameRoot);
+}
+
 // Dev-only console handles for inspection/debugging. Stripped from production builds.
 if (import.meta.env.DEV) {
   const w = window as Window & { zeroRing?: Phaser.Game; zeroRingSettings?: typeof Settings };
