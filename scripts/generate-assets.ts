@@ -759,12 +759,29 @@ function drawFloor(c: Canvas): void {
   }
 }
 
-function drawDoor(c: Canvas): void {
+// f=0 closed door, f=1 open doorway (the slab swung ajar against the left jamb).
+function drawDoor(c: Canvas, f: number): void {
   const stone = rgb(0x3a3748);
   const wood = rgb(0x7a4f2c);
   const iron = rgb(0x4a4a54);
   const gold = rgb(0xd0a838);
   fill(c, 0, 0, 32, 32, stone);
+  if (f) {
+    const dark = rgb(0x0d0b13);
+    fill(c, 5, 2, 22, 30, dark); // the open passage
+    vLine(c, 26, 3, 28, shade(dark, 16)); // hint of depth on the far jamb
+    hLine(c, 11, 2, 16, shade(stone, -14)); // lintel shadow
+    // door slab pushed open to the left
+    fill(c, 5, 2, 6, 30, wood);
+    vLine(c, 5, 2, 30, shade(wood, 20));
+    vLine(c, 10, 2, 30, shade(wood, -30));
+    for (let y = 5; y < 30; y += 5) c.set(8, y, shade(wood, -28));
+    fill(c, 5, 8, 6, 2, iron);
+    fill(c, 5, 22, 6, 2, iron);
+    disc(c, 9, 17, 1, gold);
+    rectLine(c, 0, 0, 32, 32, shade(stone, -20));
+    return;
+  }
   fill(c, 5, 2, 22, 30, wood);
   for (let x = 5; x < 27; x += 7) {
     vLine(c, x, 2, 30, shade(wood, -26));
@@ -949,6 +966,45 @@ function drawBoots(c: Canvas): void {
     fill(c, ox, 20, 8, 3, lr);
     fill(c, ox, 23, 8, 1, rgb(0x2a221a));
     volumize(c, ox, 8, 6, 12, shade(lr, 18), shade(lr, -24));
+  }
+}
+// 肩甲: a pair of angled shoulder plates with a gold trim.
+function drawPauldrons(c: Canvas): void {
+  const m = rgb(0x8a94a0);
+  for (const ox of [4, 18]) {
+    fill(c, ox + 1, 8, 8, 2, m);
+    fill(c, ox, 10, 10, 8, m);
+    volumize(c, ox, 10, 10, 8, shade(m, 22), shade(m, -28));
+    hLine(c, ox + 1, 8, 8, shade(m, 26));
+    c.set(ox + 2, 13, shade(m, -30));
+    c.set(ox + 7, 13, shade(m, -30));
+    hLine(c, ox, 17, 10, GOLD);
+  }
+}
+// 腰带: a leather strap with a gold buckle.
+function drawBelt(c: Canvas): void {
+  const lr = rgb(0x6e4a2a);
+  fill(c, 3, 13, 26, 6, lr);
+  volumize(c, 3, 13, 26, 6, shade(lr, 18), shade(lr, -26));
+  hLine(c, 4, 14, 24, shade(lr, -28));
+  hLine(c, 4, 17, 24, shade(lr, -28));
+  c.set(6, 16, shade(lr, -34));
+  c.set(25, 16, shade(lr, -34));
+  fill(c, 13, 11, 6, 10, GOLD);
+  fill(c, 15, 13, 2, 6, rgb(0x16141c));
+  rectLine(c, 13, 11, 6, 10, shade(GOLD, -30));
+}
+// 手套: a pair of leather gloves with metal cuffs.
+function drawGloves(c: Canvas): void {
+  const lr = rgb(0x7a4f2c);
+  const m = rgb(0x8a94a0);
+  for (const ox of [5, 18]) {
+    fill(c, ox, 12, 9, 9, lr);
+    volumize(c, ox, 12, 9, 9, shade(lr, 18), shade(lr, -26));
+    fill(c, ox, 9, 9, 3, m);
+    hLine(c, ox, 9, 9, shade(m, 24));
+    for (let fx = ox + 1; fx < ox + 8; fx += 2) vLine(c, fx, 17, 4, shade(lr, -28));
+    fill(c, ox === 5 ? ox + 8 : ox - 1, 14, 1, 4, lr);
   }
 }
 function drawPotion(c: Canvas, liquid: RGBA): void {
@@ -1199,7 +1255,7 @@ const MONSTERS = [
 const TILES = [
   { key: 'wall', frames: 1, draw: (c: Canvas, _f: number) => drawWall(c) },
   { key: 'floor', frames: 1, draw: (c: Canvas, _f: number) => drawFloor(c) },
-  { key: 'door', frames: 1, draw: (c: Canvas, _f: number) => drawDoor(c) },
+  { key: 'door', frames: 2, draw: (c: Canvas, f: number) => drawDoor(c, f) },
   { key: 'stairs', frames: 1, draw: (c: Canvas, _f: number) => drawStairs(c) },
   { key: 'trap', frames: 2, draw: (c: Canvas, f: number) => drawTrap(c, f) },
   { key: 'chest', frames: 2, draw: (c: Canvas, f: number) => drawChest(c, f) },
@@ -1232,6 +1288,10 @@ const ITEMS = [
   { key: 'amulet', name: '护符', category: 'accessory', draw: drawAmulet },
   { key: 'gem', name: '宝石', category: 'accessory', draw: drawGem },
   { key: 'key', name: '钥匙', category: 'misc', draw: drawKey },
+  // 0.2 extra gear slots — appended so existing frame indices (0–23) are unchanged.
+  { key: 'pauldrons', name: '肩甲', category: 'armor', draw: drawPauldrons },
+  { key: 'belt', name: '腰带', category: 'armor', draw: drawBelt },
+  { key: 'gloves', name: '手套', category: 'armor', draw: drawGloves },
 ];
 
 const EFFECTS = [

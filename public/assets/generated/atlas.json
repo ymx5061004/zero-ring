@@ -18,16 +18,16 @@
     "tiles": {
       "file": "tiles.png",
       "cols": 8,
-      "count": 11,
+      "count": 12,
       "w": 256,
       "h": 64
     },
     "items": {
       "file": "items.png",
       "cols": 8,
-      "count": 24,
+      "count": 27,
       "w": 256,
-      "h": 96
+      "h": 128
     },
     "effects": {
       "file": "effects.png",
@@ -426,40 +426,41 @@
     {
       "key": "door",
       "frames": [
-        2
+        2,
+        3
       ]
     },
     {
       "key": "stairs",
       "frames": [
-        3
+        4
       ]
     },
     {
       "key": "trap",
       "frames": [
-        4,
-        5
+        5,
+        6
       ]
     },
     {
       "key": "chest",
       "frames": [
-        6,
-        7
+        7,
+        8
       ]
     },
     {
       "key": "dark",
       "frames": [
-        8
+        9
       ]
     },
     {
       "key": "goal",
       "frames": [
-        9,
-        10
+        10,
+        11
       ]
     }
   ],
@@ -607,6 +608,24 @@
       "name": "钥匙",
       "category": "misc",
       "frame": 23
+    },
+    {
+      "key": "pauldrons",
+      "name": "肩甲",
+      "category": "armor",
+      "frame": 24
+    },
+    {
+      "key": "belt",
+      "name": "腰带",
+      "category": "armor",
+      "frame": 25
+    },
+    {
+      "key": "gloves",
+      "name": "手套",
+      "category": "armor",
+      "frame": 26
     }
   ],
   "effects": [

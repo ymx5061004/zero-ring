@@ -1,8 +1,10 @@
 import Phaser from 'phaser';
 import { FontFamily, GAME_HEIGHT, GAME_WIDTH, Palette, toCss } from '../config';
-import { HtmlButton } from './HtmlButton';
+import { HtmlButton, type HtmlButtonVariant } from './HtmlButton';
 
 export interface MobileControlsHandlers {
+  onSkill: () => void;
+  onSearch: () => void;
   onWait: () => void;
   onInventory: () => void;
   onCharacter: () => void;
@@ -40,20 +42,24 @@ export class MobileControls extends Phaser.GameObjects.Container {
         .setOrigin(0.5),
     );
 
-    const actions: Array<[string, () => void]> = [
+    const actions: Array<[string, () => void, HtmlButtonVariant?]> = [
+      ['技能', handlers.onSkill, 'primary'],
+      ['搜索', handlers.onSearch],
       ['等待', handlers.onWait],
       ['背包', handlers.onInventory],
       ['角色', handlers.onCharacter],
       ['日志', handlers.onLog],
       ['下楼', handlers.onDescend],
     ];
-    const aw = 70;
-    const gap = 6;
+    // Width scales to the count so the row always fits the portrait canvas.
+    const gap = 4;
+    const margin = 6;
+    const aw = Math.floor((GAME_WIDTH - margin * 2 - (actions.length - 1) * gap) / actions.length);
     const totalW = actions.length * aw + (actions.length - 1) * gap;
     let ax = (GAME_WIDTH - totalW) / 2 + aw / 2;
-    for (const [label, cb] of actions) {
+    for (const [label, cb, variant] of actions) {
       // Real DOM buttons (base layer) — native taps, no canvas hit-testing.
-      new HtmlButton(scene, ax, CONTROLS_TOP + 58, label, cb, { width: aw, height: 46, fontSize: 16 });
+      new HtmlButton(scene, ax, CONTROLS_TOP + 58, label, cb, { width: aw, height: 46, fontSize: 15, variant });
       ax += aw + gap;
     }
 

@@ -1,44 +1,126 @@
 import type { Player } from '../entities/Player';
-import { equipSlotOf, getItem, type ItemDef, type ScrollAction } from '../data/items';
+import { equipSlotOf, getItem, type GearSlot, type ScrollAction } from '../data/items';
+import {
+  deserializeInstance,
+  displayName,
+  Identifier,
+  isConsumable,
+  serializeInstance,
+  type Beatitude,
+  type ItemInstance,
+  type SerializedInstance,
+} from './ItemInstance';
 
-export type EquipSlot = 'weapon' | 'armor' | 'ring';
+/** The eleven paper-doll slots (0.2). 'ring' gear fits ring1 or ring2. */
+export const EQUIP_SLOTS = [
+  'mainhand',
+  'offhand',
+  'head',
+  'shoulders',
+  'body',
+  'belt',
+  'gloves',
+  'feet',
+  'amulet',
+  'ring1',
+  'ring2',
+] as const;
+export type EquipSlot = (typeof EQUIP_SLOTS)[number];
+
+/** Short original Chinese labels for each slot (UI). */
+export const SLOT_LABEL: Record<EquipSlot, string> = {
+  mainhand: '主手',
+  offhand: '副手',
+  head: '头部',
+  shoulders: '肩甲',
+  body: '身体',
+  belt: '腰带',
+  gloves: '手套',
+  feet: '足部',
+  amulet: '护符',
+  ring1: '戒指一',
+  ring2: '戒指二',
+};
+
+type EquippedMap = Record<EquipSlot, ItemInstance | null>;
+
+function emptyEquipped(): EquippedMap {
+  return {
+    mainhand: null,
+    offhand: null,
+    head: null,
+    shoulders: null,
+    body: null,
+    belt: null,
+    gloves: null,
+    feet: null,
+    amulet: null,
+    ring1: null,
+    ring2: null,
+  };
+}
 
 export interface UseOutcome {
   ok: boolean;
   message: string;
   /** Set when a scroll was read — the scene resolves the world effect. */
   scroll?: ScrollAction;
+  /** The blessing/curse of the consumed item (scales the scene-side effect). */
+  beatitude?: Beatitude;
+}
+
+export interface GearOutcome {
+  ok: boolean;
+  message: string;
+}
+
+export interface SerializedInventory {
+  gold: number;
+  bag: SerializedInstance[];
+  equip: Partial<Record<EquipSlot, SerializedInstance | null>>;
 }
 
 /**
- * The player's carried items, equipped gear and gold. Equipping mutates the
- * player's effective stats directly (delta on equip / unequip), which is what
- * combat reads — so persistence stores those effective stats plus the item ids.
+ * The player's carried item *instances*, equipped gear and gold (0.2, req. phase
+ * 4). Equipping mutates the player's effective stats directly (base bonuses plus
+ * enchantment), which is what combat reads — so persistence stores those effective
+ * stats plus the serialized instances. Curse / blessing and identification are
+ * honoured here and surfaced through the per-run {@link Identifier}.
  */
 export class InventorySystem {
   readonly capacity = 20;
-  items: ItemDef[] = [];
-  equipped: { weapon: ItemDef | null; armor: ItemDef | null; ring: ItemDef | null } = {
-    weapon: null,
-    armor: null,
-    ring: null,
-  };
+  items: ItemInstance[] = [];
+  equipped: EquippedMap = emptyEquipped();
   gold = 0;
+  readonly ident: Identifier;
 
   private readonly player: Player;
 
-  constructor(player: Player) {
+  constructor(player: Player, ident: Identifier) {
     this.player = player;
+    this.ident = ident;
   }
 
   isFull(): boolean {
     return this.items.length >= this.capacity;
   }
 
-  /** Add a (non-gold) item to the bag. Returns false if there's no room. */
-  add(item: ItemDef): boolean {
+  name(inst: ItemInstance): string {
+    return displayName(inst, this.ident);
+  }
+
+  /** Add an instance, stacking identical consumables. Returns false if full. */
+  add(inst: ItemInstance): boolean {
+    const def = getItem(inst.defId);
+    if (isConsumable(def.type)) {
+      const stack = this.items.find((i) => i.defId === inst.defId && i.beatitude === inst.beatitude);
+      if (stack) {
+        stack.quantity += inst.quantity;
+        return true;
+      }
+    }
     if (this.isFull()) return false;
-    this.items.push(item);
+    this.items.push(inst);
     return true;
   }
 
@@ -46,106 +128,185 @@ export class InventorySystem {
     this.gold += Math.max(0, Math.floor(amount));
   }
 
-  remove(item: ItemDef): void {
-    const i = this.items.indexOf(item);
+  remove(inst: ItemInstance): void {
+    const i = this.items.indexOf(inst);
     if (i !== -1) this.items.splice(i, 1);
+  }
+
+  /** Decrement a stack by one, removing the instance when it empties. */
+  private consumeOne(inst: ItemInstance): void {
+    if (inst.quantity > 1) inst.quantity -= 1;
+    else this.remove(inst);
   }
 
   // --- equipment ---------------------------------------------------------
 
-  /** Equip a bag item, swapping any current piece back into the bag. */
-  equip(item: ItemDef): string {
-    const slot = equipSlotOf(item.type);
-    if (!slot) return '';
-    this.remove(item);
+  /** Resolve a gear slot to a concrete equip slot (rings pick a free finger). */
+  private resolveSlot(gear: GearSlot): EquipSlot {
+    if (gear === 'ring') {
+      if (!this.equipped.ring1) return 'ring1';
+      if (!this.equipped.ring2) return 'ring2';
+      return 'ring1';
+    }
+    return gear;
+  }
+
+  /** Equip a bag instance, swapping any current piece back into the bag. */
+  equip(inst: ItemInstance): GearOutcome {
+    const gear = equipSlotOf(getItem(inst.defId));
+    if (!gear) return { ok: false, message: '' };
+    const slot = this.resolveSlot(gear);
     const current = this.equipped[slot];
+    if (current && current.beatitude === 'cursed') {
+      current.identified = true;
+      return { ok: false, message: `${this.name(current)}被诅咒，无法更换。` };
+    }
+    this.remove(inst);
     if (current) {
       this.applyEquip(current, -1);
       this.items.push(current);
     }
-    this.equipped[slot] = item;
-    this.applyEquip(item, +1);
-    return `你装备了${item.name}。`;
+    this.equipped[slot] = inst;
+    inst.identified = true; // wearing it reveals its blessing / curse
+    this.applyEquip(inst, +1);
+    const warn = inst.beatitude === 'cursed' ? '……一阵寒意缠身——它被诅咒了！' : '';
+    return { ok: true, message: `你装备了${this.name(inst)}。${warn}` };
   }
 
-  /** Unequip a slot, returning the piece to the bag (if there's room). */
-  unequip(slot: EquipSlot): string {
+  /** Unequip a slot, returning the piece to the bag. Cursed gear refuses. */
+  unequip(slot: EquipSlot): GearOutcome {
     const current = this.equipped[slot];
-    if (!current) return '';
-    if (this.isFull()) return '背包已满，无法卸下装备。';
+    if (!current) return { ok: false, message: '' };
+    if (current.beatitude === 'cursed') {
+      current.identified = true;
+      return { ok: false, message: `${this.name(current)}被诅咒，无法卸下（需解缚卷轴）。` };
+    }
+    if (this.isFull()) return { ok: false, message: '背包已满，无法卸下装备。' };
     this.applyEquip(current, -1);
     this.equipped[slot] = null;
     this.items.push(current);
-    return `你卸下了${current.name}。`;
+    return { ok: true, message: `你卸下了${this.name(current)}。` };
   }
 
-  private applyEquip(item: ItemDef, sign: number): void {
-    const e = item.effects.equip;
-    if (!e) return;
+  private applyEquip(inst: ItemInstance, sign: number): void {
+    const def = getItem(inst.defId);
+    const e = def.effects.equip;
     const p = this.player;
-    if (e.attack) p.attack += sign * e.attack;
-    if (e.defense) p.defense += sign * e.defense;
-    if (e.agility) p.agility += sign * e.agility;
-    if (e.magic) p.magic += sign * e.magic;
-    if (e.maxHp) {
-      p.maxHp = Math.max(1, p.maxHp + sign * e.maxHp);
-      if (p.hp > p.maxHp) p.hp = p.maxHp;
+    if (e) {
+      if (e.attack) p.attack += sign * e.attack;
+      if (e.defense) p.defense += sign * e.defense;
+      if (e.agility) p.agility += sign * e.agility;
+      if (e.magic) p.magic += sign * e.magic;
+      if (e.maxHp) {
+        p.maxHp = Math.max(1, p.maxHp + sign * e.maxHp);
+        if (p.hp > p.maxHp) p.hp = p.maxHp;
+      }
+    }
+    // Enchantment lands on the piece's primary stat (weapon→攻击, armour→防御).
+    if (inst.enchantment) {
+      if (def.type === 'weapon') p.attack += sign * inst.enchantment;
+      else if (def.type === 'armor') p.defense += sign * inst.enchantment;
+      else if (e?.defense && !e.attack) p.defense += sign * inst.enchantment;
+      else p.attack += sign * inst.enchantment;
     }
   }
 
   // --- consumables -------------------------------------------------------
 
-  /** Use a consumable; applies heal/boost or hands a scroll action to the scene. */
-  use(item: ItemDef): UseOutcome {
-    const e = item.effects;
+  /** Use a consumable; applies (beatitude-scaled) heal/boost or hands a scroll out. */
+  use(inst: ItemInstance): UseOutcome {
+    const def = getItem(inst.defId);
     const p = this.player;
+    const wasUnknown = (def.type === 'potion' || def.type === 'scroll') && !this.ident.isIdentified(inst.defId);
+    if (def.type === 'potion' || def.type === 'scroll') this.ident.identify(inst.defId);
+    inst.identified = true;
 
-    if (e.scroll) {
-      this.remove(item);
-      return { ok: true, message: `你诵读了${item.name}。`, scroll: e.scroll };
+    if (def.effects.scroll) {
+      this.consumeOne(inst);
+      const msg = wasUnknown ? `你诵读了一卷未知卷轴——竟是${def.name}。` : `你诵读了${def.name}。`;
+      return { ok: true, message: msg, scroll: def.effects.scroll, beatitude: inst.beatitude };
     }
 
     const parts: string[] = [];
-    if (e.heal) {
+    if (def.effects.heal) {
+      let heal = def.effects.heal;
+      if (inst.beatitude === 'blessed') heal = Math.round(heal * 1.5);
+      else if (inst.beatitude === 'cursed') heal = Math.round(heal * 0.5);
       const before = p.hp;
-      p.heal(e.heal);
+      p.heal(heal);
       const got = p.hp - before;
       parts.push(got > 0 ? `恢复 ${got} 点生命` : '生命已满');
     }
-    if (e.boost) {
-      if (e.boost.maxHp) p.maxHp += e.boost.maxHp;
-      if (e.boost.attack) p.attack += e.boost.attack;
-      if (e.boost.defense) p.defense += e.boost.defense;
+    if (def.effects.boost) {
+      const scale = inst.beatitude === 'blessed' ? 1.5 : inst.beatitude === 'cursed' ? 0.5 : 1;
+      if (def.effects.boost.maxHp) p.maxHp += Math.max(1, Math.round(def.effects.boost.maxHp * scale));
+      if (def.effects.boost.attack) p.attack += def.effects.boost.attack;
+      if (def.effects.boost.defense) p.defense += def.effects.boost.defense;
       parts.push('体魄得到永久强化');
     }
-    this.remove(item);
+    this.consumeOne(inst);
     const detail = parts.length ? `，${parts.join('、')}` : '';
-    return { ok: true, message: `你使用了${item.name}${detail}。` };
+    const lead = wasUnknown ? `你用下一份未知之物——竟是${def.name}` : `你使用了${def.name}`;
+    return { ok: true, message: `${lead}${detail}。`, beatitude: inst.beatitude };
+  }
+
+  /** All instances in play (bag + equipped). */
+  allInstances(): ItemInstance[] {
+    const eq = EQUIP_SLOTS.map((s) => this.equipped[s]).filter((i): i is ItemInstance => i !== null);
+    return [...this.items, ...eq];
+  }
+
+  /** 鉴物卷轴: identify every carried item; returns how many were newly revealed. */
+  identifyAllCarried(): number {
+    let count = 0;
+    for (const inst of this.allInstances()) {
+      const def = getItem(inst.defId);
+      const unknown =
+        ((def.type === 'potion' || def.type === 'scroll') && !this.ident.isIdentified(inst.defId)) ||
+        !inst.identified;
+      if (unknown) count++;
+      this.ident.identify(inst.defId);
+      inst.identified = true;
+    }
+    return count;
+  }
+
+  /** 解缚卷轴: lift curses from equipped gear so it can be removed. */
+  uncurseEquipped(): number {
+    let count = 0;
+    for (const slot of EQUIP_SLOTS) {
+      const cur = this.equipped[slot];
+      if (cur && cur.beatitude === 'cursed') {
+        cur.beatitude = 'uncursed';
+        cur.identified = true;
+        count++;
+      }
+    }
+    return count;
   }
 
   // --- persistence -------------------------------------------------------
 
-  serialize(): { gold: number; bag: string[]; equip: { weapon: string | null; armor: string | null; ring: string | null } } {
-    return {
-      gold: this.gold,
-      bag: this.items.map((i) => i.id),
-      equip: {
-        weapon: this.equipped.weapon?.id ?? null,
-        armor: this.equipped.armor?.id ?? null,
-        ring: this.equipped.ring?.id ?? null,
-      },
-    };
+  serialize(): SerializedInventory {
+    const equip: Partial<Record<EquipSlot, SerializedInstance | null>> = {};
+    for (const slot of EQUIP_SLOTS) {
+      const cur = this.equipped[slot];
+      equip[slot] = cur ? serializeInstance(cur) : null;
+    }
+    return { gold: this.gold, bag: this.items.map(serializeInstance), equip };
   }
 
   /**
-   * Restore from saved ids WITHOUT re-applying equip bonuses — the player's saved
-   * stats already include them.
+   * Restore from saved instances WITHOUT re-applying equip bonuses — the player's
+   * saved stats already include them.
    */
-  restore(gold: number, bag: string[], equip: { weapon: string | null; armor: string | null; ring: string | null }): void {
+  restore(gold: number, bag: SerializedInstance[], equip: SerializedInventory['equip']): void {
     this.gold = gold;
-    this.items = bag.map(getItem);
-    this.equipped.weapon = equip.weapon ? getItem(equip.weapon) : null;
-    this.equipped.armor = equip.armor ? getItem(equip.armor) : null;
-    this.equipped.ring = equip.ring ? getItem(equip.ring) : null;
+    this.items = bag.map(deserializeInstance);
+    this.equipped = emptyEquipped();
+    for (const slot of EQUIP_SLOTS) {
+      const s = equip[slot];
+      this.equipped[slot] = s ? deserializeInstance(s) : null;
+    }
   }
 }

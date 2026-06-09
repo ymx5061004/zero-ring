@@ -2,18 +2,20 @@ import Phaser from 'phaser';
 import { FontFamily, GAME_HEIGHT, GAME_WIDTH, Palette, toCss } from '../config';
 import { HtmlButton } from './HtmlButton';
 import { blockUi, unblockUi } from './UiLayer';
-import type { EquipSlot, InventorySystem } from '../systems/InventorySystem';
+import { SLOT_LABEL, type EquipSlot, type InventorySystem } from '../systems/InventorySystem';
 import {
   equipSlotOf,
+  getItem,
   RARITY_COLOR,
   RARITY_NAME,
   TYPE_NAME,
   type ItemDef,
 } from '../data/items';
+import type { ItemInstance } from '../systems/ItemInstance';
 
 export interface InventoryHandlers {
-  onUse: (item: ItemDef) => void;
-  onEquip: (item: ItemDef) => void;
+  onUse: (item: ItemInstance) => void;
+  onEquip: (item: ItemInstance) => void;
   onUnequip: (slot: EquipSlot) => void;
   onClose: () => void;
 }
@@ -25,10 +27,31 @@ const PH = 728;
 
 const COLS = 5;
 const ROWS = 4;
-const CELL = 58;
-const GAP = 8;
-const GRID_X = PX + 24;
-const GRID_Y = PY + 168;
+const CELL = 52;
+const GAP = 6;
+const GRID_W = COLS * CELL + (COLS - 1) * GAP;
+const GRID_X = PX + (PW - GRID_W) / 2;
+const GRID_Y = PY + 268;
+
+// Paper-doll: the eleven slots in three columns (left armour / centre
+// accessories / right armour + shield). Every label is original (see SLOT_LABEL).
+const SLOT = 40;
+const COL_L = PX + 44;
+const COL_R = PX + PW - 44;
+const COL_C = PX + PW / 2;
+const DOLL: Array<[EquipSlot, number, number]> = [
+  ['mainhand', COL_L, PY + 64],
+  ['head', COL_L, PY + 110],
+  ['shoulders', COL_L, PY + 156],
+  ['body', COL_L, PY + 202],
+  ['offhand', COL_R, PY + 64],
+  ['gloves', COL_R, PY + 110],
+  ['belt', COL_R, PY + 156],
+  ['feet', COL_R, PY + 202],
+  ['amulet', COL_C, PY + 86],
+  ['ring1', COL_C, PY + 150],
+  ['ring2', COL_C, PY + 214],
+];
 
 const STAT_LABEL: Record<string, string> = {
   attack: '攻击',
@@ -68,7 +91,7 @@ export class InventoryView extends Phaser.GameObjects.Container {
   private readonly inv: InventorySystem;
   private readonly handlers: InventoryHandlers;
   private readonly content: Phaser.GameObjects.Container;
-  private selected: ItemDef | null = null;
+  private selected: ItemInstance | null = null;
   private alive = true;
   /** Persistent DOM buttons (close ✕ / 关闭返回). */
   private staticBtns: HtmlButton[] = [];
@@ -131,22 +154,17 @@ export class InventoryView extends Phaser.GameObjects.Container {
         .setOrigin(1, 0.5),
     );
 
-    // --- equipped slots ------------------------------------------------
-    const slots: Array<[EquipSlot, string, number]> = [
-      ['weapon', '武器', PX + 64],
-      ['armor', '防具', PX + 183],
-      ['ring', '饰品', PX + 302],
-    ];
-    for (const [slot, label, cx] of slots) {
+    // --- equipped slots (paper-doll) -----------------------------------
+    for (const [slot, cx, cy] of DOLL) {
       const item = this.inv.equipped[slot];
-      this.makeSlot(add, cx, PY + 82, item, label, () => {
+      this.makeSlot(add, cx, cy, item, SLOT_LABEL[slot], () => {
         if (item) this.afterAction(() => this.handlers.onUnequip(slot));
       });
     }
 
     const rule = this.scene.add.graphics();
     rule.lineStyle(1, Palette.border, 1);
-    rule.lineBetween(PX + 16, PY + 150, PX + PW - 16, PY + 150);
+    rule.lineBetween(PX + 16, GRID_Y - 16, PX + PW - 16, GRID_Y - 16);
     add(rule);
 
     // --- bag grid ------------------------------------------------------
@@ -168,25 +186,30 @@ export class InventoryView extends Phaser.GameObjects.Container {
     add: (o: Phaser.GameObjects.GameObject) => void,
     cx: number,
     cy: number,
-    item: ItemDef | null,
+    item: ItemInstance | null,
     label: string,
     onTap: () => void,
   ): void {
-    const size = 52;
+    const def = item ? getItem(item.defId) : null;
+    const size = SLOT;
     const g = this.scene.add.graphics();
     g.fillStyle(Palette.panelDown, 1);
-    g.fillRoundedRect(cx - size / 2, cy - size / 2, size, size, 8);
-    g.lineStyle(2, item ? RARITY_COLOR[item.rarity] : Palette.border, 1);
-    g.strokeRoundedRect(cx - size / 2, cy - size / 2, size, size, 8);
+    g.fillRoundedRect(cx - size / 2, cy - size / 2, size, size, 7);
+    g.lineStyle(2, def ? RARITY_COLOR[def.rarity] : Palette.border, 1);
+    g.strokeRoundedRect(cx - size / 2, cy - size / 2, size, size, 7);
     add(g);
 
-    if (item && this.scene.textures.exists('items')) {
-      add(this.scene.add.image(cx, cy, 'items', item.spriteFrame).setScale(1.3));
-    } else if (!item) {
-      add(this.scene.add.text(cx, cy, '空', { fontFamily: FontFamily, fontSize: '13px', color: toCss(Palette.textMuted) }).setOrigin(0.5));
+    if (def && this.scene.textures.exists('items')) {
+      // Filled: just the icon — the column position conveys the slot.
+      add(this.scene.add.image(cx, cy, 'items', def.spriteFrame).setScale(1.05));
+    } else {
+      // Empty: the slot's name sits inside the box, so nothing crowds the rows.
+      add(
+        this.scene.add
+          .text(cx, cy, label, { fontFamily: FontFamily, fontSize: '9px', color: toCss(Palette.textMuted), align: 'center', wordWrap: { width: size - 4 } })
+          .setOrigin(0.5),
+      );
     }
-
-    add(this.scene.add.text(cx, cy + size / 2 + 9, label, { fontFamily: FontFamily, fontSize: '11px', color: toCss(Palette.textDim) }).setOrigin(0.5));
 
     // Native DOM hit area over the canvas slot.
     this.dynBtns.push(
@@ -194,22 +217,30 @@ export class InventoryView extends Phaser.GameObjects.Container {
     );
   }
 
-  private makeCell(add: (o: Phaser.GameObjects.GameObject) => void, cx: number, cy: number, item: ItemDef | null): void {
+  private makeCell(add: (o: Phaser.GameObjects.GameObject) => void, cx: number, cy: number, item: ItemInstance | null): void {
+    const def = item ? getItem(item.defId) : null;
     const selected = item !== null && item === this.selected;
     const g = this.scene.add.graphics();
     g.fillStyle(selected ? Palette.panelLight : Palette.panelDown, 1);
     g.fillRoundedRect(cx - CELL / 2, cy - CELL / 2, CELL, CELL, 8);
-    g.lineStyle(selected ? 2.5 : 1.5, item ? RARITY_COLOR[item.rarity] : Palette.border, item ? 1 : 0.6);
+    g.lineStyle(selected ? 2.5 : 1.5, def ? RARITY_COLOR[def.rarity] : Palette.border, item ? 1 : 0.6);
     g.strokeRoundedRect(cx - CELL / 2, cy - CELL / 2, CELL, CELL, 8);
     add(g);
 
-    if (item) {
+    if (item && def) {
       if (this.scene.textures.exists('items')) {
-        add(this.scene.add.image(cx, cy - 4, 'items', item.spriteFrame).setScale(1.35));
+        add(this.scene.add.image(cx, cy - 4, 'items', def.spriteFrame).setScale(1.35));
+      }
+      if (item.quantity > 1) {
+        add(
+          this.scene.add
+            .text(cx + CELL / 2 - 6, cy - CELL / 2 + 6, `${item.quantity}`, { fontFamily: FontFamily, fontSize: '11px', color: toCss(Palette.accentBright), fontStyle: 'bold' })
+            .setOrigin(1, 0),
+        );
       }
       add(
         this.scene.add
-          .text(cx, cy + CELL / 2 - 9, item.name, { fontFamily: FontFamily, fontSize: '9px', color: toCss(selected ? Palette.text : Palette.textDim) })
+          .text(cx, cy + CELL / 2 - 9, this.inv.name(item), { fontFamily: FontFamily, fontSize: '9px', color: toCss(selected ? Palette.text : Palette.textDim) })
           .setOrigin(0.5),
       );
       this.dynBtns.push(
@@ -238,22 +269,24 @@ export class InventoryView extends Phaser.GameObjects.Container {
       return;
     }
 
+    const def = getItem(item.defId);
+    const unidentified = (def.type === 'potion' || def.type === 'scroll') && !this.inv.ident.isIdentified(item.defId);
     add(
       this.scene.add
-        .text(left, top, item.name, { fontFamily: FontFamily, fontSize: '18px', color: toCss(RARITY_COLOR[item.rarity]), fontStyle: 'bold' })
+        .text(left, top, this.inv.name(item), { fontFamily: FontFamily, fontSize: '18px', color: toCss(unidentified ? Palette.textDim : RARITY_COLOR[def.rarity]), fontStyle: 'bold' })
         .setOrigin(0, 0),
     );
     add(
       this.scene.add
-        .text(left, top + 26, `${TYPE_NAME[item.type]} · ${RARITY_NAME[item.rarity]}`, { fontFamily: FontFamily, fontSize: '12px', color: toCss(Palette.textMuted) })
+        .text(left, top + 26, unidentified ? `${TYPE_NAME[def.type]} · 未鉴定` : `${TYPE_NAME[def.type]} · ${RARITY_NAME[def.rarity]}`, { fontFamily: FontFamily, fontSize: '12px', color: toCss(Palette.textMuted) })
         .setOrigin(0, 0),
     );
     add(
       this.scene.add
-        .text(left, top + 48, item.description, { fontFamily: FontFamily, fontSize: '13px', color: toCss(Palette.textDim), lineSpacing: 3, wordWrap: { width: PW - 56 } })
+        .text(left, top + 48, unidentified ? '尚未鉴定——使用后方知其效，亦可用鉴物卷轴看清。' : def.description, { fontFamily: FontFamily, fontSize: '13px', color: toCss(Palette.textDim), lineSpacing: 3, wordWrap: { width: PW - 56 } })
         .setOrigin(0, 0),
     );
-    const summary = effectSummary(item);
+    const summary = unidentified ? '' : effectSummary(def);
     if (summary) {
       add(
         this.scene.add
@@ -262,9 +295,9 @@ export class InventoryView extends Phaser.GameObjects.Container {
       );
     }
 
-    const equippable = equipSlotOf(item.type) !== null;
+    const equippable = equipSlotOf(def) !== null;
     this.dynBtns.push(
-      new HtmlButton(this.scene, GAME_WIDTH / 2, top + 134, equippable ? '装备' : '使用', () => {
+      new HtmlButton(this.scene, GAME_WIDTH / 2, top + 118, equippable ? '装备' : '使用', () => {
         this.afterAction(() => (equippable ? this.handlers.onEquip(item) : this.handlers.onUse(item)));
       }, {
         width: 200,

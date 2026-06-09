@@ -4,6 +4,8 @@
  * traditional fantasy roles.
  */
 
+import type { Resistances } from '../systems/StatusSystem';
+
 /** Stable identifiers for the playable classes. */
 export type ClassId =
   | 'ring-knight'
@@ -16,10 +18,20 @@ export type ClassId =
   | 'copperlamp-wanderer'
   | 'chainbreaker';
 
+/** Passive skills hook into combat / turns; active skills are fired from a button. */
+export type SkillKind = 'active' | 'passive';
+
 export interface ClassSkill {
   name: string;
   /** One-line description of the signature ability. */
   description: string;
+  kind: SkillKind;
+  /** Mana spent each time an active skill fires. */
+  manaCost?: number;
+  /** Per-floor charge limit for an active skill (refreshes each descent). */
+  usesPerFloor?: number;
+  /** The active skill asks the player to pick a direction first. */
+  needsDirection?: boolean;
 }
 
 export interface CharClass {
@@ -35,8 +47,12 @@ export interface CharClass {
   defense: number;
   agility: number;
   magic: number;
+  /** Max mana — fuels active skills and ranged spells (0 = mundane class). */
+  mana: number;
+  /** Innate damage-channel resistances. */
+  resist?: Resistances;
 
-  /** Item keys (see scripts/generate-assets.ts → items sheet) carried at start. */
+  /** Item ids (see src/game/data/items.ts) carried at start of a new run. */
   startingItems: string[];
   /** Signature ability. */
   skill: ClassSkill;
@@ -62,10 +78,12 @@ export const CLASSES: readonly CharClass[] = [
     defense: 8,
     agility: 3,
     magic: 1,
-    startingItems: ['sword', 'shield', 'bread'],
+    mana: 0,
+    startingItems: ['ringsteel_sword', 'guard_shield', 'bread'],
     skill: {
       name: '环誓',
-      description: '每次探索一次，受到致命伤害时不会倒下，并回复少许生命。',
+      description: '每层一次，受到致命伤害时不会倒下并回血，但随后三回合陷入易伤。',
+      kind: 'passive',
     },
     hero: 'knight',
     color: 0x4a78b0,
@@ -80,10 +98,14 @@ export const CLASSES: readonly CharClass[] = [
     defense: 4,
     agility: 5,
     magic: 7,
-    startingItems: ['dagger', 'potion_red', 'potion_green'],
+    mana: 10,
+    resist: { poison: 0.5 },
+    startingItems: ['rusty_dagger', 'heal_potion', 'moss_potion'],
     skill: {
-      name: '灰烬调和',
-      description: '饮用药剂时额外回复生命，并能净化中毒与衰弱。',
+      name: '灰烬急救',
+      description: '消耗法力施行急救，回复生命并净化中毒、灼烧与衰弱。',
+      kind: 'active',
+      manaCost: 4,
     },
     hero: 'alchemist',
     color: 0xa8744e,
@@ -98,10 +120,14 @@ export const CLASSES: readonly CharClass[] = [
     defense: 3,
     agility: 9,
     magic: 2,
-    startingItems: ['dagger', 'key', 'coin_pile'],
+    mana: 0,
+    startingItems: ['rusty_dagger', 'swift_boots', 'coin_pile'],
     skill: {
       name: '裂隙穿行',
-      description: '每层可侧身穿过一格墙壁一次，避开守卫与死路。',
+      description: '每层数次，朝选定方向侧身穿过一格墙壁，避开守卫与死路。',
+      kind: 'active',
+      usesPerFloor: 3,
+      needsDirection: true,
     },
     hero: 'rogue',
     color: 0x7a5ad0,
@@ -116,10 +142,14 @@ export const CLASSES: readonly CharClass[] = [
     defense: 2,
     agility: 4,
     magic: 9,
-    startingItems: ['staff', 'scroll', 'potion_blue'],
+    mana: 16,
+    resist: { fire: 0.25, ice: 0.25 },
+    startingItems: ['starsalt_staff', 'azure_potion', 'light_scroll'],
     skill: {
       name: '盐爆',
-      description: '消耗法力，引爆星盐对周围一圈敌人造成法术伤害。',
+      description: '消耗法力引爆星盐，对周身一圈敌人造成法术伤害并令其迟缓。',
+      kind: 'active',
+      manaCost: 6,
     },
     hero: 'mage',
     color: 0x4ab0c8,
@@ -134,10 +164,14 @@ export const CLASSES: readonly CharClass[] = [
     defense: 5,
     agility: 3,
     magic: 7,
-    startingItems: ['staff', 'amulet', 'potion_green'],
+    mana: 12,
+    resist: { mind: 0.4 },
+    startingItems: ['whisper_wand', 'amulet_ward', 'moss_potion'],
     skill: {
       name: '钟鸣',
-      description: '敲响骨钟，驱散并削弱周围的亡灵，短暂提升自身防御。',
+      description: '消耗法力敲响骨钟：令亡灵恐惧，使其余敌人迟缓。',
+      kind: 'active',
+      manaCost: 5,
     },
     hero: 'cleric',
     color: 0xc0a050,
@@ -152,10 +186,14 @@ export const CLASSES: readonly CharClass[] = [
     defense: 4,
     agility: 7,
     magic: 2,
-    startingItems: ['bow', 'dagger', 'apple'],
+    mana: 0,
+    startingItems: ['hunter_bow', 'rusty_dagger', 'cave_fruit'],
     skill: {
       name: '碎刃投掷',
-      description: '掷出碎裂的刀片，对一名远处敌人造成额外伤害。',
+      description: '每层数次，朝选定方向掷出碎刃，命中直线上第一名敌人造成重创。',
+      kind: 'active',
+      usesPerFloor: 4,
+      needsDirection: true,
     },
     hero: 'ranger',
     color: 0x4a9a5a,
@@ -170,10 +208,12 @@ export const CLASSES: readonly CharClass[] = [
     defense: 5,
     agility: 6,
     magic: 3,
-    startingItems: ['boots', 'bread', 'gem'],
+    mana: 0,
+    startingItems: ['swift_boots', 'jerky', 'ring_might'],
     skill: {
       name: '连击',
-      description: '连续命中同一目标后，下一击必定造成重击。',
+      description: '连续命中同一目标层层叠加连击，伤害随之攀升，转换目标则归零。',
+      kind: 'passive',
     },
     hero: 'monk',
     color: 0xd07a30,
@@ -188,10 +228,13 @@ export const CLASSES: readonly CharClass[] = [
     defense: 5,
     agility: 5,
     magic: 4,
-    startingItems: ['dagger', 'coin', 'scroll'],
+    mana: 0,
+    startingItems: ['rusty_dagger', 'light_scroll', 'coin'],
     skill: {
       name: '灯火',
-      description: '点亮铜灯照亮四周，吓退潜伏的暗影并照见隐藏之物。',
+      description: '每层数次点亮铜灯，照亮四周并照见大范围内的隐藏陷阱与暗门。',
+      kind: 'active',
+      usesPerFloor: 3,
     },
     hero: 'bard',
     color: 0xb87a3a,
@@ -206,10 +249,12 @@ export const CLASSES: readonly CharClass[] = [
     defense: 2,
     agility: 4,
     magic: 1,
-    startingItems: ['axe', 'meat', 'potion_red'],
+    mana: 0,
+    startingItems: ['riftstone_axe', 'jerky', 'heal_potion'],
     skill: {
       name: '狂怒',
-      description: '生命越低，攻击越凶；濒死时爆发出骇人的蛮力。',
+      description: '生命越低近战越凶；半血以下伤害大增，濒死时爆发骇人的蛮力。',
+      kind: 'passive',
     },
     hero: 'barbarian',
     color: 0xc2502e,

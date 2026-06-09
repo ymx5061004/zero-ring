@@ -1,4 +1,6 @@
 import type { ClassId } from '../data/classes';
+import type { SerializedInstance } from '../systems/ItemInstance';
+import type { EquipSlot } from '../systems/InventorySystem';
 
 /**
  * The persistent state of a single in-progress descent. This is the exact shape
@@ -13,12 +15,18 @@ export interface RunState {
   defense: number;
   agility: number;
   magic: number;
+  /** Current / max mana (0.2). Optional so pre-0.2 saves still load. */
+  mana?: number;
+  maxMana?: number;
   level: number;
   exp: number;
   gold: number;
-  /** Carried item ids and equipped item ids per slot. */
-  bag: string[];
-  equip: { weapon: string | null; armor: string | null; ring: string | null };
+  /** Carried + equipped item instances (0.2). */
+  bag: SerializedInstance[];
+  /** Equipped pieces per paper-doll slot (0.2 expands this to 11 slots). */
+  equip: Partial<Record<EquipSlot, SerializedInstance | null>>;
+  /** Per-run identification table (potion/scroll aliases + revealed kinds). */
+  ident?: { aliases: Array<[string, string]>; known: string[] };
   turn: number;
   kills: number;
   /** Epoch millis when the run began (stamped by the scene, not in scripts). */

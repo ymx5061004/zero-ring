@@ -39,7 +39,15 @@ export class SettingsView extends Phaser.GameObjects.Container {
     dim.fillStyle(Palette.black, 0.78);
     dim.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
     dim.setInteractive(new Phaser.Geom.Rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT), Phaser.Geom.Rectangle.Contains);
-    dim.on('pointerup', () => this.close());
+    // Only a tap *outside* the panel dismisses it. Taps on the panel / its DOM
+    // controls must not close it: Phaser fires this canvas pointer-up (from the
+    // window-level listener) *before* the DOM button's click, so closing here
+    // would tear the panel down before a toggle could register (the click would
+    // then land on a removed element and never fire).
+    dim.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+      const inPanel = pointer.x >= PX && pointer.x <= PX + PW && pointer.y >= PY && pointer.y <= PY + PH;
+      if (!inPanel) this.close();
+    });
     this.add(dim);
 
     const panel = scene.add.graphics();

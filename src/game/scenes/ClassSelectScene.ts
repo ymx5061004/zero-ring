@@ -3,11 +3,11 @@ import { FontFamily, GAME_HEIGHT, GAME_WIDTH, Palette, SceneKeys, toCss } from '
 import { HtmlButton } from '../ui/HtmlButton';
 import { uiStage } from '../ui/UiLayer';
 import { CLASSES, type CharClass } from '../data/classes';
+import { getItem } from '../data/items';
 import {
   getAtlas,
   heroAnim,
   heroAvatarFrame,
-  itemByKey,
   type SpriteAtlas,
 } from '../assets/atlas';
 
@@ -174,11 +174,10 @@ export class ClassSelectScene extends Phaser.Scene {
     );
 
     // Starting-item icons (top-right).
-    cls.startingItems.slice(0, 3).forEach((key, i) => {
+    cls.startingItems.slice(0, 3).forEach((id, i) => {
       const ix = hw - 48 + i * 20;
-      const itemDef = this.atlas ? itemByKey(this.atlas, key) : null;
-      if (itemDef && this.textures.exists('items')) {
-        card.add(this.add.image(ix, -hh + 22, 'items', itemDef.frame).setScale(0.82));
+      if (this.textures.exists('items')) {
+        card.add(this.add.image(ix, -hh + 22, 'items', getItem(id).spriteFrame).setScale(0.82));
       }
     });
 

@@ -21,6 +21,11 @@ export class Player extends Entity {
   level: number;
   exp: number;
   expToNext: number;
+  /** Mana powers active skills and ranged spells; regenerates slowly with steps. */
+  mana: number;
+  maxMana: number;
+  /** Internal counter so mana regenerates every few turns rather than each step. */
+  private manaTick = 0;
 
   private constructor(init: {
     classId: ClassId;
@@ -30,12 +35,23 @@ export class Player extends Entity {
     defense: number;
     agility: number;
     magic: number;
+    mana: number;
+    maxMana: number;
     level: number;
     exp: number;
   }) {
-    super({ hp: init.hp, maxHp: init.maxHp, attack: init.attack, defense: init.defense, agility: init.agility });
+    super({
+      hp: init.hp,
+      maxHp: init.maxHp,
+      attack: init.attack,
+      defense: init.defense,
+      agility: init.agility,
+      resistances: { ...(getClass(init.classId).resist ?? {}) },
+    });
     this.classId = init.classId;
     this.magic = init.magic;
+    this.mana = init.mana;
+    this.maxMana = init.maxMana;
     this.level = init.level;
     this.exp = init.exp;
     this.expToNext = Player.expForLevel(init.level);
@@ -51,13 +67,16 @@ export class Player extends Entity {
       defense: cls.defense,
       agility: cls.agility,
       magic: cls.magic,
+      mana: cls.mana,
+      maxMana: cls.mana,
       level: 1,
       exp: 0,
     });
   }
 
-  /** Restore a hero from a saved run. */
+  /** Restore a hero from a saved run (defaults mana for pre-0.2 saves). */
   static fromRun(run: RunState): Player {
+    const cls = getClass(run.classId);
     return new Player({
       classId: run.classId,
       hp: run.hp,
@@ -66,9 +85,32 @@ export class Player extends Entity {
       defense: run.defense,
       agility: run.agility,
       magic: run.magic,
+      mana: run.mana ?? cls.mana,
+      maxMana: run.maxMana ?? cls.mana,
       level: run.level,
       exp: run.exp,
     });
+  }
+
+  /** Spend mana for a skill; returns false (and spends nothing) if short. */
+  spendMana(amount: number): boolean {
+    if (this.mana < amount) return false;
+    this.mana = Math.max(0, this.mana - amount);
+    return true;
+  }
+
+  /** Restore mana, clamped to the maximum. */
+  restoreMana(amount: number): void {
+    this.mana = Math.min(this.maxMana, this.mana + Math.max(0, amount));
+  }
+
+  /** Called once per game turn: trickle mana back (every 3rd turn). */
+  regenMana(): void {
+    if (this.maxMana <= 0 || this.mana >= this.maxMana) return;
+    if (++this.manaTick >= 3) {
+      this.manaTick = 0;
+      this.mana = Math.min(this.maxMana, this.mana + 1);
+    }
   }
 
   get def(): CharClass {

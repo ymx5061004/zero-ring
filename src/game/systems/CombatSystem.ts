@@ -37,6 +37,8 @@ export function resolveAttack(attacker: Entity, defender: Entity, rng: RNG): Att
   const spread = rng.range(-1, 1);
   let damage = Math.max(1, base + spread);
   if (crit) damage = Math.round(damage * 1.7);
+  // 易伤（vulnerable）defenders take noticeably more damage (0.2).
+  if (defender.hasStatus('vulnerable')) damage = Math.round(damage * 1.3);
 
   defender.takeDamage(damage);
   return { hit: true, dodged: false, crit, damage, killed: defender.isDead };

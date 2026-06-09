@@ -6,11 +6,13 @@ import { rollFloorItem } from '../systems/LootSystem';
 export enum TileType {
   Wall,
   Floor,
-  Door,
+  Door, // an open doorway (passable, see-through)
   StairsDown,
-  Trap,
+  Trap, // a *revealed* trap marker (hidden traps live in DungeonMap.traps)
   Chest,
   ChestOpen,
+  DoorClosed, // closed door: blocks movement + sight until opened (0.2)
+  DoorLocked, // locked door: needs a key or a kick (0.2)
 }
 
 /** Maps each tile to a key in the generated `tiles` spritesheet (see atlas). */
@@ -22,11 +24,43 @@ export const TILE_SPRITE_KEY: Record<TileType, string> = {
   [TileType.Trap]: 'trap',
   [TileType.Chest]: 'chest',
   [TileType.ChestOpen]: 'chest',
+  [TileType.DoorClosed]: 'door',
+  [TileType.DoorLocked]: 'door',
 };
 
-/** Only walls block movement; doors and everything else can be entered. */
+/** Closed and locked doors block movement; open doors and floors do not. */
 export function isWalkable(type: TileType): boolean {
-  return type !== TileType.Wall;
+  return type !== TileType.Wall && type !== TileType.DoorClosed && type !== TileType.DoorLocked;
+}
+
+/** Walls and shut doors stop sight and projectiles. */
+export function blocksSight(type: TileType): boolean {
+  return type === TileType.Wall || type === TileType.DoorClosed || type === TileType.DoorLocked;
+}
+
+export function isClosedDoor(type: TileType): boolean {
+  return type === TileType.DoorClosed || type === TileType.DoorLocked;
+}
+
+/** The kinds of trap a floor can hide (req. phase 7). */
+export type TrapKind = 'spike' | 'poison' | 'teleport' | 'snare';
+
+export interface TrapInstance {
+  x: number;
+  y: number;
+  kind: TrapKind;
+  /** Hidden traps are invisible until searched, illuminated, or triggered. */
+  hidden: boolean;
+}
+
+/** A lockable / trappable chest, decoupled from the tile grid (req. phase 7). */
+export interface ChestInstance {
+  x: number;
+  y: number;
+  opened: boolean;
+  locked: boolean;
+  /** Springs a trap the first time it is forced open. */
+  trapped: boolean;
 }
 
 export interface Vec {
@@ -65,6 +99,10 @@ export interface DungeonMap {
   visible: boolean[][];
   monsters: MapEntity[];
   items: MapEntity[];
+  /** Hidden / revealed traps, decoupled from the tile grid (0.2). */
+  traps: TrapInstance[];
+  /** Interactive chests with lock / trap state (0.2). */
+  chests: ChestInstance[];
 }
 
 
@@ -113,7 +151,7 @@ export function generateDungeon(depth: number, rng: RNG): DungeonMap {
   }
 
   // Punch doors where corridors pierce a room's wall ring.
-  for (const r of rooms) placeDoors(tiles, r);
+  for (const r of rooms) placeDoors(tiles, r, rng);
 
   // Spawn in the first room; stairs in the room farthest from spawn.
   const spawn: Vec = { x: rooms[0].cx, y: rooms[0].cy };
@@ -142,16 +180,29 @@ export function generateDungeon(depth: number, rng: RNG): DungeonMap {
   }
   rng.shuffle(open);
   let cursor = 0;
+  // Hidden traps live in their own list; the tile underneath stays floor so the
+  // trap is invisible until searched / triggered (req. phase 7).
+  const traps: TrapInstance[] = [];
+  const trapKinds: TrapKind[] = ['spike', 'poison', 'teleport', 'snare'];
   const trapCount = rng.range(4, 7);
-  const chestCount = rng.range(3, 5);
   for (let i = 0; i < trapCount && cursor < open.length; i++, cursor++) {
-    tiles[open[cursor].y][open[cursor].x] = TileType.Trap;
+    traps.push({ x: open[cursor].x, y: open[cursor].y, kind: rng.pick(trapKinds), hidden: true });
   }
+  const chests: ChestInstance[] = [];
+  const chestCount = rng.range(3, 5);
   for (let i = 0; i < chestCount && cursor < open.length; i++, cursor++) {
-    tiles[open[cursor].y][open[cursor].x] = TileType.Chest;
+    const c = open[cursor];
+    tiles[c.y][c.x] = TileType.Chest;
+    chests.push({
+      x: c.x,
+      y: c.y,
+      opened: false,
+      locked: rng.chance(0.3),
+      trapped: rng.chance(0.3),
+    });
   }
 
-  // Remaining open floor cells host (decorative) monsters and item pickups.
+  // Remaining open floor cells host monsters and item pickups.
   const monsters: MapEntity[] = [];
   const items: MapEntity[] = [];
   const pool = spawnPool(depth);
@@ -172,7 +223,7 @@ export function generateDungeon(depth: number, rng: RNG): DungeonMap {
     visible.push(new Array(width).fill(false));
   }
 
-  return { width, height, tiles, rooms, spawn, stairsDown, explored, visible, monsters, items };
+  return { width, height, tiles, rooms, spawn, stairsDown, explored, visible, monsters, items, traps, chests };
 }
 
 function overlaps(a: Room, b: Room): boolean {
@@ -213,15 +264,32 @@ function carveV(tiles: TileType[][], x: number, y1: number, y2: number): void {
   }
 }
 
-/** Any corridor-carved floor cell on the room's surrounding ring becomes a door. */
-function placeDoors(tiles: TileType[][], r: Room): void {
+/**
+ * Punch doors where a corridor genuinely *pierces* a room's wall ring — a single
+ * one-tile gap with the wall continuing on both sides. Cells where a corridor
+ * merely runs alongside the wall (gap has floor neighbours) are left as open
+ * floor, which avoids long meaningless runs of doors (0.2 fix). Most doors start
+ * closed, a few locked, the rest already open.
+ */
+function placeDoors(tiles: TileType[][], r: Room, rng: RNG): void {
   const h = tiles.length;
   const w = tiles[0].length;
+  const isWall = (x: number, y: number): boolean =>
+    x >= 0 && y >= 0 && x < w && y < h && tiles[y][x] === TileType.Wall;
   for (let y = r.y - 1; y <= r.y + r.h; y++) {
     for (let x = r.x - 1; x <= r.x + r.w; x++) {
-      const onBorder = x === r.x - 1 || x === r.x + r.w || y === r.y - 1 || y === r.y + r.h;
-      if (!onBorder || x < 0 || y < 0 || x >= w || y >= h) continue;
-      if (tiles[y][x] === TileType.Floor) tiles[y][x] = TileType.Door;
+      const onVert = x === r.x - 1 || x === r.x + r.w;
+      const onHorz = y === r.y - 1 || y === r.y + r.h;
+      // Only true edge cells, never the four corners.
+      if (onVert === onHorz) continue;
+      if (x < 0 || y < 0 || x >= w || y >= h) continue;
+      if (tiles[y][x] !== TileType.Floor) continue;
+      // A real doorway is a one-tile gap: the wall must continue to either side
+      // (above/below for a vertical wall, left/right for a horizontal one).
+      const isGap = onVert ? isWall(x, y - 1) && isWall(x, y + 1) : isWall(x - 1, y) && isWall(x + 1, y);
+      if (!isGap) continue;
+      // Doors start shut (you open them as you explore); a few are locked.
+      tiles[y][x] = rng.chance(0.12) ? TileType.DoorLocked : TileType.DoorClosed;
     }
   }
 }
