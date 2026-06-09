@@ -19,7 +19,9 @@ const VIEW_H = LIST_BOTTOM - LIST_TOP;
 
 const CARD_X = 14;
 const CARD_W = GAME_WIDTH - CARD_X * 2;
-const CARD_H = 136;
+// Tall enough for a 2-line description and a 3-line skill line once Chinese text
+// wraps (advanced wrap) — see the measured worst case in makeCard's layout.
+const CARD_H = 176;
 const CARD_GAP = 10;
 
 const STAT_LABELS = ['体', '攻', '守', '敏', '法'];
@@ -151,11 +153,11 @@ export class ClassSelectScene extends Phaser.Scene {
       glow.strokeRoundedRect(-hw + 1, -hh + 1, CARD_W - 2, CARD_H - 2, 12);
     };
 
-    card.add(this.makeAvatar(cls, -hw + 38, -2, 2.0));
+    card.add(this.makeAvatar(cls, -hw + 38, -hh + 66, 2.0));
 
     card.add(
       this.add
-        .text(-hw + 78, -hh + 18, cls.name, {
+        .text(-hw + 78, -hh + 22, cls.name, {
           fontFamily: FontFamily,
           fontSize: '19px',
           color: toCss(cls.color),
@@ -165,7 +167,7 @@ export class ClassSelectScene extends Phaser.Scene {
     );
     card.add(
       this.add
-        .text(-hw + 78, -hh + 38, cls.title, {
+        .text(-hw + 78, -hh + 42, cls.title, {
           fontFamily: FontFamily,
           fontSize: '12px',
           color: toCss(Palette.textDim),
@@ -177,13 +179,13 @@ export class ClassSelectScene extends Phaser.Scene {
     cls.startingItems.slice(0, 3).forEach((id, i) => {
       const ix = hw - 48 + i * 20;
       if (this.textures.exists('items')) {
-        card.add(this.add.image(ix, -hh + 22, 'items', getItem(id).spriteFrame).setScale(0.82));
+        card.add(this.add.image(ix, -hh + 24, 'items', getItem(id).spriteFrame).setScale(0.82));
       }
     });
 
     card.add(
       this.add
-        .text(-hw + 78, -hh + 56, cls.description, {
+        .text(-hw + 78, -hh + 58, cls.description, {
           fontFamily: FontFamily,
           fontSize: '12px',
           color: toCss(Palette.textDim),
@@ -199,12 +201,12 @@ export class ClassSelectScene extends Phaser.Scene {
       const sx = -hw + 80 + i * 52;
       card.add(
         this.add
-          .text(sx, hh - 32, STAT_LABELS[i], { fontFamily: FontFamily, fontSize: '11px', color: toCss(Palette.textMuted) })
+          .text(sx, -hh + 110, STAT_LABELS[i], { fontFamily: FontFamily, fontSize: '11px', color: toCss(Palette.textMuted) })
           .setOrigin(0, 0.5),
       );
       card.add(
         this.add
-          .text(sx + 18, hh - 32, String(value), {
+          .text(sx + 18, -hh + 110, String(value), {
             fontFamily: FontFamily,
             fontSize: '14px',
             color: toCss(cls.color),
@@ -214,16 +216,17 @@ export class ClassSelectScene extends Phaser.Scene {
       );
     });
 
-    // Signature skill.
+    // Signature skill — up to three wrapped lines, anchored from its top so the
+    // last line stays inside the card.
     card.add(
       this.add
-        .text(-hw + 80, hh - 14, `技 · ${cls.skill.name}　${cls.skill.description}`, {
+        .text(-hw + 80, -hh + 130, `技 · ${cls.skill.name}　${cls.skill.description}`, {
           fontFamily: FontFamily,
           fontSize: '11px',
           color: toCss(Palette.accent),
           wordWrap: { width: CARD_W - 96 },
         })
-        .setOrigin(0, 0.5),
+        .setOrigin(0, 0),
     );
 
     // Selection is handled by a native DOM hit area over the card (see

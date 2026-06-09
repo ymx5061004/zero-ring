@@ -281,23 +281,27 @@ export class InventoryView extends Phaser.GameObjects.Container {
         .text(left, top + 26, unidentified ? `${TYPE_NAME[def.type]} · 未鉴定` : `${TYPE_NAME[def.type]} · ${RARITY_NAME[def.rarity]}`, { fontFamily: FontFamily, fontSize: '12px', color: toCss(Palette.textMuted) })
         .setOrigin(0, 0),
     );
-    add(
-      this.scene.add
-        .text(left, top + 48, unidentified ? '尚未鉴定——使用后方知其效，亦可用鉴物卷轴看清。' : def.description, { fontFamily: FontFamily, fontSize: '13px', color: toCss(Palette.textDim), lineSpacing: 3, wordWrap: { width: PW - 56 } })
-        .setOrigin(0, 0),
-    );
+    // Flow the description, the effect summary and the action button down from one
+    // another (measuring each block) so wrapped text never collides with the button.
+    const descText = this.scene.add
+      .text(left, top + 48, unidentified ? '尚未鉴定——使用后方知其效，亦可用鉴物卷轴看清。' : def.description, { fontFamily: FontFamily, fontSize: '13px', color: toCss(Palette.textDim), lineSpacing: 3, wordWrap: { width: PW - 56 } })
+      .setOrigin(0, 0);
+    add(descText);
+    let y = top + 48 + descText.height + 8;
     const summary = unidentified ? '' : effectSummary(def);
     if (summary) {
-      add(
-        this.scene.add
-          .text(left, top + 92, summary, { fontFamily: FontFamily, fontSize: '13px', color: toCss(Palette.accent), wordWrap: { width: PW - 56 } })
-          .setOrigin(0, 0),
-      );
+      const sumText = this.scene.add
+        .text(left, y, summary, { fontFamily: FontFamily, fontSize: '13px', color: toCss(Palette.accent), wordWrap: { width: PW - 56 } })
+        .setOrigin(0, 0);
+      add(sumText);
+      y += sumText.height + 12;
+    } else {
+      y += 4;
     }
 
     const equippable = equipSlotOf(def) !== null;
     this.dynBtns.push(
-      new HtmlButton(this.scene, GAME_WIDTH / 2, top + 118, equippable ? '装备' : '使用', () => {
+      new HtmlButton(this.scene, GAME_WIDTH / 2, y + 22, equippable ? '装备' : '使用', () => {
         this.afterAction(() => (equippable ? this.handlers.onEquip(item) : this.handlers.onUse(item)));
       }, {
         width: 200,
