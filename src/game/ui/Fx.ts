@@ -19,24 +19,38 @@ export function playEffect(scene: Phaser.Scene, key: string, x: number, y: numbe
   spr.once(Phaser.Animations.Events.ANIMATION_COMPLETE, () => spr.destroy());
 }
 
-/** A combat number that rises and fades (red for damage, green for heal). */
-export function floatNumber(scene: Phaser.Scene, x: number, y: number, text: string, color: number): void {
+/**
+ * A combat number that pops in, rises and fades. Pass `{ big: true }` for crits /
+ * heavy hits — a larger glyph with a punchier scale-overshoot for extra impact.
+ */
+export function floatNumber(
+  scene: Phaser.Scene,
+  x: number,
+  y: number,
+  text: string,
+  color: number,
+  opts?: { big?: boolean },
+): void {
+  const big = opts?.big ?? false;
   const t = scene.add
     .text(x, y, text, {
       fontFamily: FontFamily,
-      fontSize: '17px',
+      fontSize: big ? '27px' : '17px',
       color: toCss(color),
       fontStyle: 'bold',
       stroke: '#000000',
-      strokeThickness: 3,
+      strokeThickness: big ? 4 : 3,
     })
     .setOrigin(0.5)
-    .setDepth(NUM_DEPTH);
+    .setDepth(NUM_DEPTH)
+    .setScale(big ? 0.3 : 0.65);
+  // Scale-overshoot pop, then drift up and fade.
+  scene.tweens.add({ targets: t, scale: 1, duration: 160, ease: 'Back.easeOut' });
   scene.tweens.add({
     targets: t,
-    y: y - 26,
+    y: y - (big ? 36 : 26),
     alpha: { from: 1, to: 0 },
-    duration: 720,
+    duration: big ? 900 : 720,
     ease: 'Quad.easeOut',
     onComplete: () => t.destroy(),
   });

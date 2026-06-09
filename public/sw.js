@@ -3,7 +3,7 @@
  * keeps working offline after the first visit. No build-time manifest needed:
  * responses are cached as they are fetched; on failure we fall back to the cache.
  */
-const CACHE = 'zero-ring-v15';
+const CACHE = 'zero-ring-v16';
 
 self.addEventListener('install', () => self.skipWaiting());
 

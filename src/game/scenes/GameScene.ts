@@ -1101,8 +1101,12 @@ export class GameScene extends Phaser.Scene {
         this.flashSprite(spr);
         const design = this.atlas ? monsterByFrame(this.atlas, foe.spriteFrame) : null;
         if (design && this.anims.exists(monsterAnim(design.key, 'hurt'))) spr.play(monsterAnim(design.key, 'hurt'));
+        this.recoilSprite(spr, dx, dy, result.crit ? 14 : 9);
+        if (result.crit && !result.killed) this.punchSprite(spr, 1.3);
       }
-      floatNumber(this, fx, fy - 14, `-${result.damage}`, result.crit ? CRIT_COLOR : Palette.white);
+      burst(this, fx, fy, result.crit ? CRIT_COLOR : 0xeaeaf0, result.crit ? 14 : 7);
+      this.hitShake(result.damage, result.crit);
+      floatNumber(this, fx, fy - 14, `-${result.damage}`, result.crit ? CRIT_COLOR : Palette.white, { big: result.crit });
       this.pushLog(
         result.crit
           ? `你暴击${foe.name}，造成 ${result.damage} 点伤害！`
@@ -1134,7 +1138,10 @@ export class GameScene extends Phaser.Scene {
     const idx = this.monsters.indexOf(foe);
     if (idx !== -1) this.monsters.splice(idx, 1);
     this.pushLog(`你击倒了${foe.name}，获得 ${foe.exp} 点经验。`);
-    burst(this, fx, fy, 0xb86a6a, 6);
+    // A kill should land hard: a warm shard burst, a white flash burst and a shake.
+    burst(this, fx, fy, 0xd98a6a, 12);
+    burst(this, fx, fy, 0xffffff, 6);
+    this.hitShake(7, true);
 
     const spr = this.monsterSprites.get(foe);
     if (spr) {
@@ -1293,8 +1300,10 @@ export class GameScene extends Phaser.Scene {
     }
 
     this.flashSprite(this.playerSprite);
-    this.cameras.main.shake(80, 0.003);
-    floatNumber(this, PLAY_CX + this.rng.range(-6, 6), PLAY_CY - 18, `-${combat.damage}`, combat.crit ? CRIT_COLOR : Palette.danger);
+    this.flashDamage();
+    this.recoilSprite(this.playerSprite, ddx, ddy, combat.crit ? 12 : 7);
+    this.hitShake(combat.damage, combat.crit);
+    floatNumber(this, PLAY_CX + this.rng.range(-6, 6), PLAY_CY - 18, `-${combat.damage}`, combat.crit ? CRIT_COLOR : Palette.danger, { big: combat.crit });
     this.pushLog(
       combat.crit
         ? `${monster.name}的暴击命中你，造成 ${combat.damage} 点伤害！`
@@ -1316,6 +1325,48 @@ export class GameScene extends Phaser.Scene {
     spr.setTintFill(0xffffff);
     this.time.delayedCall(90, () => {
       if (spr.active) spr.clearTint();
+    });
+  }
+
+  // --- hit juice (打击感) -------------------------------------------------
+
+  /** Camera shake scaled by damage and amplified on crits. */
+  private hitShake(damage: number, crit = false): void {
+    const intensity = Math.min(0.012, 0.0022 + damage * 0.0006) * (crit ? 1.7 : 1);
+    this.cameras.main.shake(crit ? 200 : 130, intensity);
+  }
+
+  /** Knock a tile-layer sprite back along (dx,dy) and snap it home (recoil feel). */
+  private recoilSprite(spr: Phaser.GameObjects.Sprite, dx: number, dy: number, dist: number): void {
+    const ox = spr.x;
+    const oy = spr.y;
+    this.tweens.add({
+      targets: spr,
+      x: ox + dx * dist,
+      y: oy + dy * dist,
+      duration: this.ms(70),
+      yoyo: true,
+      ease: 'Quad.easeOut',
+      onComplete: () => {
+        if (spr.active) spr.setPosition(ox, oy);
+      },
+    });
+  }
+
+  /** A quick scale-overshoot on a sprite — emphasises a crit landing. */
+  private punchSprite(spr: Phaser.GameObjects.Sprite, amount = 1.3): void {
+    const sx = spr.scaleX;
+    const sy = spr.scaleY;
+    this.tweens.add({
+      targets: spr,
+      scaleX: sx * amount,
+      scaleY: sy * amount,
+      duration: this.ms(70),
+      yoyo: true,
+      ease: 'Quad.easeOut',
+      onComplete: () => {
+        if (spr.active) spr.setScale(sx, sy);
+      },
     });
   }
 
@@ -1685,8 +1736,13 @@ export class GameScene extends Phaser.Scene {
       floatNumber(this, fx, fy - 14, '闪避', Palette.textDim);
       this.pushLog(`${foe.name}躲开了你的远程攻击。`);
     } else {
-      if (spr) this.flashSprite(spr);
-      floatNumber(this, fx, fy - 14, `-${result.damage}`, result.crit ? CRIT_COLOR : Palette.white);
+      if (spr) {
+        this.flashSprite(spr);
+        if (result.crit && !result.killed) this.punchSprite(spr, 1.3);
+      }
+      burst(this, fx, fy, result.crit ? CRIT_COLOR : 0xeaeaf0, result.crit ? 14 : 7);
+      this.hitShake(result.damage, result.crit);
+      floatNumber(this, fx, fy - 14, `-${result.damage}`, result.crit ? CRIT_COLOR : Palette.white, { big: result.crit });
       this.pushLog(
         result.crit
           ? `你远程暴击${foe.name}，造成 ${result.damage} 点伤害！`
