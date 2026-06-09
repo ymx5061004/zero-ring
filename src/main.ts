@@ -16,6 +16,21 @@ import { SpriteShowcaseScene } from './game/scenes/SpriteShowcaseScene';
  * (FIT + centred) onto whatever screen it runs on. The page itself is black and
  * non-scrolling; see src/style.css.
  */
+// Render every Text object's glyph texture at the device's pixel density so text
+// stays crisp on high-DPI phones (the 390×844 canvas is upscaled by FIT, which
+// would otherwise blur text). Patches the factory so all `this.add.text(...)`
+// calls inherit it; size/position/input are unaffected.
+const TEXT_RESOLUTION = Math.min(Math.max(window.devicePixelRatio || 1, 1), 3);
+const factory = Phaser.GameObjects.GameObjectFactory.prototype as unknown as {
+  text(x: number, y: number, text: string | string[], style?: Record<string, unknown>): Phaser.GameObjects.Text;
+};
+const originalText = factory.text;
+factory.text = function patchedText(x, y, text, style) {
+  const merged = { ...(style ?? {}) };
+  if (merged.resolution === undefined) merged.resolution = TEXT_RESOLUTION;
+  return originalText.call(this, x, y, text, merged);
+};
+
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
   parent: 'game-root',
