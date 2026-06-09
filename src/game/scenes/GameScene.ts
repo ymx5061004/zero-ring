@@ -1951,18 +1951,22 @@ export class GameScene extends Phaser.Scene {
     if (res.ok) this.commitInventoryAction();
   }
 
+  // Equipping / unequipping is gear management: keep the bag open (InventoryView
+  // rebuilds itself after the action) and don't spend a turn — letting monsters act
+  // here would play out unseen behind the open overlay. Only using a consumable,
+  // which has an immediate world effect, closes the bag and advances the turn.
   private equipItem(item: ItemInstance): void {
     const res = this.inventory.equip(item);
     if (res.message) this.pushLog(res.message);
     this.updateHud();
-    if (res.ok) this.commitInventoryAction();
+    if (res.ok) this.persist();
   }
 
   private unequipSlot(slot: EquipSlot): void {
     const res = this.inventory.unequip(slot);
     if (res.message) this.pushLog(res.message);
     this.updateHud();
-    if (res.ok) this.commitInventoryAction();
+    if (res.ok) this.persist();
   }
 
   /**

@@ -42,6 +42,14 @@ const originalText = factory.text;
 factory.text = function patchedText(x, y, text, style) {
   const merged = { ...(style ?? {}) };
   if (merged.resolution === undefined) merged.resolution = SUPERSAMPLE;
+  // Phaser's default word wrap only breaks on spaces, but Chinese has none — so a
+  // long CJK line is treated as one unbreakable "word" and overflows its wrap box.
+  // Advanced wrap breaks at character boundaries, so enable it whenever a wrap
+  // width is given (call sites can still opt out by setting useAdvancedWrap).
+  const ww = merged.wordWrap as { width?: number; useAdvancedWrap?: boolean } | undefined;
+  if (ww && ww.width != null && ww.useAdvancedWrap === undefined) {
+    merged.wordWrap = { ...ww, useAdvancedWrap: true };
+  }
   return originalText.call(this, x, y, text, merged);
 };
 

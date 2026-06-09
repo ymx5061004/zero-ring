@@ -180,15 +180,20 @@ export class SpriteShowcaseScene extends Phaser.Scene {
     let dragging = false;
     let lastPy = 0;
 
+    // Pointer y is in canvas-buffer pixels (hi-DPI buffer = design×SUPERSAMPLE), but
+    // content.y is in design space — so map back through the camera, else the drag
+    // delta is SUPERSAMPLE× too large and the list scrolls far too fast.
+    const logicalY = (p: Phaser.Input.Pointer): number => this.cameras.main.getWorldPoint(p.x, p.y).y;
     const zone = this.add.zone(0, HEADER_H, GAME_WIDTH, viewH).setOrigin(0, 0).setInteractive();
     zone.on('pointerdown', (p: Phaser.Input.Pointer) => {
       dragging = true;
-      lastPy = p.y;
+      lastPy = logicalY(p);
     });
     this.input.on('pointermove', (p: Phaser.Input.Pointer) => {
       if (!dragging) return;
-      content.y = clampY(content.y + (p.y - lastPy));
-      lastPy = p.y;
+      const py = logicalY(p);
+      content.y = clampY(content.y + (py - lastPy));
+      lastPy = py;
     });
     this.input.on('pointerup', () => (dragging = false));
     this.input.on('pointerupoutside', () => (dragging = false));

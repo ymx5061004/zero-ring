@@ -45,7 +45,11 @@ export class SettingsView extends Phaser.GameObjects.Container {
     // would tear the panel down before a toggle could register (the click would
     // then land on a removed element and never fire).
     dim.on('pointerup', (pointer: Phaser.Input.Pointer) => {
-      const inPanel = pointer.x >= PX && pointer.x <= PX + PW && pointer.y >= PY && pointer.y <= PY + PH;
+      // Pointer x/y are in canvas-buffer pixels (hi-DPI buffer = design×SUPERSAMPLE);
+      // map back to the 390×844 design space before testing the panel rect, or every
+      // tap reads as "outside" and closes the panel before a toggle can register.
+      const w = scene.cameras.main.getWorldPoint(pointer.x, pointer.y);
+      const inPanel = w.x >= PX && w.x <= PX + PW && w.y >= PY && w.y <= PY + PH;
       if (!inPanel) this.close();
     });
     this.add(dim);

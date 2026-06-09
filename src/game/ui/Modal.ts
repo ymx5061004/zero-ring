@@ -26,7 +26,7 @@ export class Modal extends Phaser.GameObjects.Container {
     const left = cx - panelW / 2;
     const top = cy - panelH / 2;
 
-    // Dim, input-blocking backdrop. A tap on it closes the modal.
+    // Dim, input-blocking backdrop. A tap *outside* the panel closes the modal.
     const dim = scene.add.graphics();
     dim.fillStyle(Palette.black, 0.74);
     dim.fillRect(0, 0, GAME_WIDTH, GAME_HEIGHT);
@@ -34,7 +34,17 @@ export class Modal extends Phaser.GameObjects.Container {
       new Phaser.Geom.Rectangle(0, 0, GAME_WIDTH, GAME_HEIGHT),
       Phaser.Geom.Rectangle.Contains,
     );
-    dim.on('pointerup', () => this.close());
+    // Taps on the panel — including its DOM 关闭 button — must NOT close here:
+    // Phaser fires this canvas pointer-up before the DOM button's click, so closing
+    // would tear the panel (and its button) down first; the click then falls through
+    // to whatever menu button is revealed behind (e.g. 关于). Pointer x/y are in
+    // canvas-buffer pixels (hi-DPI buffer = design×SUPERSAMPLE), so map back to the
+    // 390×844 design space before testing the panel rect.
+    dim.on('pointerup', (pointer: Phaser.Input.Pointer) => {
+      const w = scene.cameras.main.getWorldPoint(pointer.x, pointer.y);
+      const inPanel = w.x >= left && w.x <= left + panelW && w.y >= top && w.y <= top + panelH;
+      if (!inPanel) this.close();
+    });
 
     const panel = scene.add.graphics();
     panel.fillStyle(Palette.panel, 1);
