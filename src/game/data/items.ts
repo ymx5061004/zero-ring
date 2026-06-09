@@ -91,6 +91,46 @@ export function itemPrice(def: ItemDef, depth: number): number {
   return Math.max(3, Math.round(base * (1 + depth * 0.12)));
 }
 
+/** A named random modifier that gear can roll, granting equip-stat bonuses (0.3). */
+export type StatKey = 'attack' | 'defense' | 'agility' | 'magic' | 'maxHp';
+
+export interface Affix {
+  key: string;
+  /** Short fragment shown before the item name (e.g. 锋锐). */
+  name: string;
+  bonus: Partial<Record<StatKey, number>>;
+  /** Gear types this affix may roll on. */
+  on: ItemType[];
+}
+
+export const AFFIXES: readonly Affix[] = [
+  { key: 'keen', name: '锋锐', bonus: { attack: 2 }, on: ['weapon'] },
+  { key: 'mighty', name: '巨力', bonus: { attack: 3 }, on: ['weapon'] },
+  { key: 'bloodthirsty', name: '嗜血', bonus: { attack: 1, maxHp: 3 }, on: ['weapon'] },
+  { key: 'swift', name: '迅捷', bonus: { agility: 2 }, on: ['weapon', 'ring'] },
+  { key: 'starlit', name: '星辉', bonus: { magic: 3 }, on: ['weapon', 'ring'] },
+  { key: 'deft', name: '灵巧', bonus: { agility: 1, attack: 1 }, on: ['weapon', 'ring'] },
+  { key: 'bulwark', name: '坚壁', bonus: { defense: 2 }, on: ['armor'] },
+  { key: 'heavy', name: '厚重', bonus: { defense: 1, maxHp: 5 }, on: ['armor'] },
+  { key: 'guardian', name: '守护', bonus: { defense: 3 }, on: ['armor'] },
+  { key: 'nimble', name: '轻灵', bonus: { agility: 2 }, on: ['armor'] },
+  { key: 'hale', name: '强健', bonus: { maxHp: 8 }, on: ['weapon', 'armor', 'ring'] },
+  { key: 'sage', name: '贤者', bonus: { magic: 2, maxHp: 3 }, on: ['weapon', 'ring'] },
+];
+
+const AFFIX_BY_KEY = new Map(AFFIXES.map((a) => [a.key, a]));
+export function getAffix(key: string): Affix | undefined {
+  return AFFIX_BY_KEY.get(key);
+}
+
+export const STAT_LABEL_CN: Record<StatKey, string> = {
+  attack: '攻击',
+  defense: '防御',
+  agility: '敏捷',
+  magic: '法术',
+  maxHp: '生命',
+};
+
 export const ITEMS: readonly ItemDef[] = [
   // --- weapons (mainhand) ---------------------------------------------
   { id: 'rusty_dagger', name: '锈蚀匕首', type: 'weapon', gearSlot: 'mainhand', rarity: 'common', spriteFrame: 2, description: '一柄布满锈斑的旧匕首，轻巧而不起眼。', effects: { equip: { attack: 2, agility: 1 } } },

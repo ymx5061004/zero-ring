@@ -427,7 +427,7 @@ export class GameScene extends Phaser.Scene {
 
   /** Spawn a freshly-rolled item entity on the map (drops, chest loot, floor loot). */
   private spawnItem(id: string, x: number, y: number, redraw = true): void {
-    this.placeFloorItem(rollInstance(id, this.rng), x, y, redraw);
+    this.placeFloorItem(rollInstance(id, this.rng, this.depth), x, y, redraw);
   }
 
   /** Place an existing instance on the floor, nudging off an occupied tile. */

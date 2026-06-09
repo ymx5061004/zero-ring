@@ -8,10 +8,12 @@ import {
   getItem,
   RARITY_COLOR,
   RARITY_NAME,
+  STAT_LABEL_CN,
   TYPE_NAME,
   type ItemDef,
+  type StatKey,
 } from '../data/items';
-import type { ItemInstance } from '../systems/ItemInstance';
+import { affixesOf, equipBonus, type ItemInstance } from '../systems/ItemInstance';
 
 export interface InventoryHandlers {
   onUse: (item: ItemInstance) => void;
@@ -81,6 +83,16 @@ function effectSummary(item: ItemDef): string {
   if (e.scroll) parts.push(SCROLL_DESC[e.scroll] ?? '');
   if (e.gold) parts.push(`金币 +${e.gold}`);
   return parts.join('　');
+}
+
+const STAT_ORDER: StatKey[] = ['attack', 'defense', 'agility', 'magic', 'maxHp'];
+
+/** A gear instance's *total* equip bonus (base + affixes + enchantment), for display. */
+function gearStatLine(inst: ItemInstance): string {
+  const b = equipBonus(inst);
+  return STAT_ORDER.filter((k) => b[k] !== 0)
+    .map((k) => `${STAT_LABEL_CN[k]} ${b[k] > 0 ? '+' : ''}${b[k]}`)
+    .join('　');
 }
 
 /**
@@ -289,16 +301,30 @@ export class InventoryView extends Phaser.GameObjects.Container {
       .setOrigin(0, 0);
     add(descText);
     let y = top + 48 + descText.height + 8;
-    const summary = unidentified ? '' : effectSummary(def);
+    const gear = equipSlotOf(def) !== null;
+    // Gear shows its total rolled bonus (base + affixes + enchant); others their effect.
+    const summary = unidentified ? '' : gear ? gearStatLine(item) : effectSummary(def);
     if (summary) {
       const sumText = this.scene.add
         .text(left, y, summary, { fontFamily: FontFamily, fontSize: '13px', color: toCss(Palette.accent), wordWrap: { width: PW - 56 } })
         .setOrigin(0, 0);
       add(sumText);
-      y += sumText.height + 12;
+      y += sumText.height + 8;
     } else {
       y += 4;
     }
+    // Affix names — the heart of the "找到神装" moment, in bright gold.
+    if (!unidentified && gear) {
+      const names = affixesOf(item).map((a) => a.name);
+      if (names.length) {
+        const ax = this.scene.add
+          .text(left, y, `词缀　${names.join(' · ')}`, { fontFamily: FontFamily, fontSize: '12px', color: toCss(Palette.accentBright), fontStyle: 'bold', wordWrap: { width: PW - 56 } })
+          .setOrigin(0, 0);
+        add(ax);
+        y += ax.height + 6;
+      }
+    }
+    y += 4;
 
     // Primary action (装备 / 使用) plus a 丢弃 to free a full bag — dropped items
     // land at the player's feet and can be picked back up.

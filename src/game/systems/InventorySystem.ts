@@ -3,6 +3,7 @@ import { equipSlotOf, getItem, type GearSlot, type ScrollAction } from '../data/
 import {
   deserializeInstance,
   displayName,
+  equipBonus,
   Identifier,
   isConsumable,
   serializeInstance,
@@ -189,25 +190,16 @@ export class InventorySystem {
   }
 
   private applyEquip(inst: ItemInstance, sign: number): void {
-    const def = getItem(inst.defId);
-    const e = def.effects.equip;
+    // equipBonus folds in base bonuses, affixes and enchantment as one block.
+    const b = equipBonus(inst);
     const p = this.player;
-    if (e) {
-      if (e.attack) p.attack += sign * e.attack;
-      if (e.defense) p.defense += sign * e.defense;
-      if (e.agility) p.agility += sign * e.agility;
-      if (e.magic) p.magic += sign * e.magic;
-      if (e.maxHp) {
-        p.maxHp = Math.max(1, p.maxHp + sign * e.maxHp);
-        if (p.hp > p.maxHp) p.hp = p.maxHp;
-      }
-    }
-    // Enchantment lands on the piece's primary stat (weapon→攻击, armour→防御).
-    if (inst.enchantment) {
-      if (def.type === 'weapon') p.attack += sign * inst.enchantment;
-      else if (def.type === 'armor') p.defense += sign * inst.enchantment;
-      else if (e?.defense && !e.attack) p.defense += sign * inst.enchantment;
-      else p.attack += sign * inst.enchantment;
+    if (b.attack) p.attack += sign * b.attack;
+    if (b.defense) p.defense += sign * b.defense;
+    if (b.agility) p.agility += sign * b.agility;
+    if (b.magic) p.magic += sign * b.magic;
+    if (b.maxHp) {
+      p.maxHp = Math.max(1, p.maxHp + sign * b.maxHp);
+      if (p.hp > p.maxHp) p.hp = p.maxHp;
     }
   }
 
