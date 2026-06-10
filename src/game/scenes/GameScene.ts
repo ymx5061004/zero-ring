@@ -7,15 +7,25 @@ import { burst, floatNumber, playEffect } from '../ui/Fx';
 import { Settings } from '../core/Settings';
 import { Player } from '../entities/Player';
 import { Monster } from '../entities/Monster';
-import { getMonster } from '../data/monsters';
+import { getMonster, monsterLore, spawnPool } from '../data/monsters';
 import { CLASSES, getClass, type CharClass, type ClassId } from '../data/classes';
 import { SaveManager } from '../core/SaveManager';
+import { metaStatBonus } from '../core/Meta';
 import type { RunState, SerializedFloor } from '../core/types';
 import { RNG } from '../core/RNG';
 import { computeFOV } from '../core/FOV';
 import { runMonsterTurns, type TurnEvent } from '../core/TurnSystem';
 import { resolveAttack, type AttackResult } from '../systems/CombatSystem';
-import { applyStatus, cleanse, statusStrip, tickStatuses } from '../systems/StatusSystem';
+import {
+  applyStatus,
+  cleanse,
+  restoreStatuses,
+  serializeStatuses,
+  statusDetails,
+  statusStrip,
+  tickStatuses,
+  type StatusType,
+} from '../systems/StatusSystem';
 import { hasLineOfSight } from '../world/Los';
 import {
   blocksSight as tileBlocksSight,
@@ -25,8 +35,10 @@ import {
   MAX_DEPTH,
   TILE_SPRITE_KEY,
   TileType,
+  type ChestInstance,
   type DungeonMap,
   type TrapInstance,
+  type TrapKind,
   type Vec,
 } from '../world/Dungeon';
 import {
@@ -43,8 +55,10 @@ import { InventoryView } from '../ui/InventoryView';
 import { GameMenu } from '../ui/GameMenu';
 import { MapView } from '../ui/MapView';
 import { SettingsView } from '../ui/SettingsView';
+import { ChestView } from '../ui/ChestView';
+import { AltarView } from '../ui/AltarView';
 import { rollChestLoot, rollMonsterDrop, rollShopStock } from '../systems/LootSystem';
-import { equipSlotOf, getItem, itemPrice, type ScrollAction } from '../data/items';
+import { equipSlotOf, getItem, itemPrice, type PotionAction, type ScrollAction } from '../data/items';
 import { ShopView, type ShopEntry } from '../ui/ShopView';
 import { deserializeInstance, Identifier, isGear, plainInstance, rollInstance, serializeInstance, type Beatitude, type ItemInstance } from '../systems/ItemInstance';
 
@@ -60,6 +74,14 @@ interface ItemEntity {
   sprite: Phaser.GameObjects.Image;
 }
 
+/**
+ * Three-way outcome of a player action (0.3 action economy). It lets the unified
+ * commit tell apart an action that was never really attempted (no target / no
+ * direction → free) from one that was actually performed but whiffed (e.g. a
+ * thrown blade that flew but hit nothing → still costs a turn + a charge).
+ */
+type ActionResult = 'notAttempted' | 'failedAfterAttempt' | 'succeeded';
+
 // Display geometry. Only a window of tiles around the player is ever rendered.
 const TILE = 32;
 const VIEW_COLS = 13;
@@ -72,6 +94,48 @@ const HUD_H = 68;
 const MOVE_MS = 130;
 const CRIT_COLOR = 0xffd24a;
 const ELITE_TINT = 0xffcc66;
+
+/** Display names for chest trap kinds (0.3 chest interaction). */
+const TRAP_NAME: Record<TrapKind, string> = {
+  spike: '尖刺',
+  poison: '毒气',
+  snare: '索套',
+  teleport: '传送',
+};
+
+// --- 0.3.10 balance knobs ------------------------------------------------
+// Central tuning constants for the values flagged as most likely to need a nudge
+// during the balance pass (kept here so they aren't scattered magic numbers).
+/** 零环守卫 phase-2 attack bump — softened from +3 so the flip isn't a sudden wall. */
+const BOSS_PHASE2_ATTACK = 2;
+const BOSS_PHASE2_AGILITY = 2;
+/** Heal/turn the boss regenerates for 6 turns after flipping. */
+const BOSS_PHASE2_REGEN = 2;
+/** 断链狂徒 low-HP regen power — softened from 2 to curb the sustain-stacking flagged in phase 8. */
+const RAGE_REGEN_POWER = 1;
+
+/** Log lines shown when a player status wears off (0.3 input-layer feedback). */
+const STATUS_RECOVERY: Partial<Record<StatusType, string>> = {
+  frozen: '冰霜消融，你重新能够行动。',
+  slowed: '迟缓散去，脚步恢复轻快。',
+  confused: '眩晕退去，你的方向感恢复了。',
+  feared: '你重新镇定下来。',
+  vulnerable: '易伤的虚弱褪去了。',
+  poisoned: '毒素终于散尽。',
+  burning: '身上的火焰熄灭了。',
+  blinded: '昏翳散去，视野重新开阔。',
+};
+
+/** Log fragment when a monster's on-hit attack lands a status (0.3.1). */
+const ONHIT_FLAVOR: Partial<Record<StatusType, string>> = {
+  frozen: '的寒息冻住了你的动作！',
+  confused: '的孢子让你头晕目眩。',
+  feared: '的尖啸攫住你的心神。',
+  burning: '的炽焰点燃了你！',
+  slowed: '的黏丝缠住了你的脚步。',
+  vulnerable: '的酸液腐蚀着你，伤口更易撕裂。',
+  poisoned: '的毒液渗入了你的伤口。',
+};
 
 const TILE_COLOR: Record<TileType, number> = {
   [TileType.Wall]: Palette.wall,
@@ -132,9 +196,15 @@ export class GameScene extends Phaser.Scene {
   private mapView?: MapView;
   private settingsView?: SettingsView;
   private shopView?: ShopView;
+  private chestView?: ChestView;
+  private altarView?: AltarView;
+  /** Special-room ambiance lines already shown this floor (keyed by room origin). */
+  private announcedRooms = new Set<string>();
   /** The floor's merchant (absent on the boss floor); stock is part of the seed. */
   private merchant?: { x: number; y: number; sprite: Phaser.GameObjects.Sprite };
   private shopStock: ShopEntry[] = [];
+  /** 商路 meta unlock (phase 9): the merchant carries an extra slot + exotic wares. */
+  private tradeRoutes = false;
   /** Seed of the current floor (persisted so resume rebuilds the same layout). */
   private floorSeed = 0;
   /** A saved floor snapshot to restore on resume (set in create, consumed once). */
@@ -147,6 +217,12 @@ export class GameScene extends Phaser.Scene {
   private skillUses = 0;
   /** 环骑士: whether 环誓 death-save has fired on this floor. */
   private ringOathUsed = false;
+  /** 折光 affix: spent on the first ranged hit each floor (phase 7). */
+  private refractUsed = false;
+  /** 蓄盐 affix: charge built per turn, spent to amplify the next active skill. */
+  private saltCharge = 0;
+  /** The saltcharge bonus threaded into the skill currently being cast. */
+  private skillSaltBonus = 0;
   /** 铁拳僧 combo: current target + stack count. */
   private comboTarget: Monster | null = null;
   private comboCount = 0;
@@ -182,6 +258,9 @@ export class GameScene extends Phaser.Scene {
     this.mapView = undefined;
     this.settingsView = undefined;
     this.shopView = undefined;
+    this.chestView = undefined;
+    this.altarView = undefined;
+    this.announcedRooms = new Set();
     this.logLines = [];
     this.atlas = getAtlas(this);
 
@@ -193,6 +272,9 @@ export class GameScene extends Phaser.Scene {
         return;
       }
       this.player = Player.fromRun(run);
+      // Negative/positive statuses survive a save round-trip now (0.3) — a poisoned
+      // hero stays poisoned after 继续游戏 (old saves had none → empty list).
+      this.player.statuses = restoreStatuses(run.playerStatuses);
       this.depth = run.depth;
       this.turn = run.turn;
       this.createdAt = run.createdAt;
@@ -216,18 +298,25 @@ export class GameScene extends Phaser.Scene {
       const ident = new Identifier(new RNG((Math.floor(Math.random() * 0xffffffff)) >>> 0));
       this.inventory = new InventorySystem(this.player, ident);
       this.grantStartingItems(getClass(classId));
-      // Apply permanent legacy upgrades (meta-progression) at the start of a new run.
-      const up = SaveManager.getMeta().upgrades;
-      if (up.vigor) {
-        this.player.maxHp += up.vigor * 4;
-        this.player.hp = this.player.maxHp;
+      // Permanent legacy upgrades at the start of a new run. The *vertical* stat bonuses
+      // are skipped in 纯净模式 (phase 9); the horizontal 商路 unlock applies regardless
+      // (it's set below, for both new and resumed runs).
+      if (!Settings.get().classicMode) {
+        const b = metaStatBonus(SaveManager.getMeta().upgrades);
+        if (b.maxHp) {
+          this.player.maxHp += b.maxHp;
+          this.player.hp = this.player.maxHp;
+        }
+        this.player.attack += b.attack;
+        if (b.gold) this.inventory.addGold(b.gold);
+        for (let i = 0; i < b.potions; i++) this.inventory.add(plainInstance('heal_potion'));
       }
-      this.player.attack += up.blade;
-      if (up.purse) this.inventory.addGold(up.purse * 15);
-      for (let i = 0; i < up.supplies; i++) this.inventory.add(plainInstance('heal_potion'));
       this.kills = 0;
       this.floorSeed = Math.floor(Math.random() * 0xffffffff) >>> 0;
     }
+
+    // 商路 unlock is player-wide (not a run stat) — read it for new AND resumed runs.
+    this.tradeRoutes = (SaveManager.getMeta().upgrades.tradeRoutes ?? 0) >= 1;
 
     this.cls = getClass(classId);
     this.heroKey = this.cls.hero;
@@ -293,8 +382,11 @@ export class GameScene extends Phaser.Scene {
     // Per-floor ability bookkeeping resets on every descent.
     this.skillUses = this.cls.skill.usesPerFloor ?? 0;
     this.ringOathUsed = false;
+    this.refractUsed = false; // 折光 re-arms each floor
+    this.saltCharge = 0;
     this.comboTarget = null;
     this.comboCount = 0;
+    this.announcedRooms = new Set(); // special-room ambiance re-arms on a new floor
     this.monsterSprites.forEach((s) => s.destroy());
     this.monsterSprites.clear();
     this.monsters = [];
@@ -328,10 +420,17 @@ export class GameScene extends Phaser.Scene {
       spawn: { ...this.map.spawn },
       stairs: { ...this.map.stairsDown },
       traps: this.map.traps.map((t) => ({ x: t.x, y: t.y, kind: t.kind, hidden: t.hidden })),
-      chests: this.map.chests.map((c) => ({ x: c.x, y: c.y, opened: c.opened, locked: c.locked, trapped: c.trapped })),
+      chests: this.map.chests.map((c) => ({
+        x: c.x, y: c.y, opened: c.opened, locked: c.locked, trapped: c.trapped,
+        trapDiscovered: c.trapDiscovered, trapType: c.trapType, lootGenerated: c.lootGenerated,
+        altar: c.altar,
+      })),
       monsters: this.monsters.map((m) => ({
         key: m.id, x: m.x, y: m.y, hp: m.hp, maxHp: m.maxHp, attack: m.attack, exp: m.exp,
         elite: m.elite, name: m.name, skipNext: m.skipNext, phase2: m.phase2, spawnedSplit: m.spawnedSplit,
+        statuses: serializeStatuses(m),
+        stolenGold: m.stolenGold, warningShown: m.warningShown, lowHpWarned: m.lowHpWarned,
+        anchorX: m.anchorX, anchorY: m.anchorY,
       })),
       items: this.items.map((e) => ({ inst: serializeInstance(e.inst), x: e.x, y: e.y })),
       merchant: this.merchant
@@ -350,6 +449,8 @@ export class GameScene extends Phaser.Scene {
     this.comboCount = 0;
     this.skillUses = s.skillUses;
     this.ringOathUsed = s.ringOathUsed;
+    this.refractUsed = false; // affix per-floor flags reset on resume (slightly generous)
+    this.saltCharge = 0;
     this.monsterSprites.forEach((sp) => sp.destroy());
     this.monsterSprites.clear();
     this.monsters = [];
@@ -375,7 +476,13 @@ export class GameScene extends Phaser.Scene {
       monsters: [],
       items: [],
       traps: s.traps.map((t) => ({ x: t.x, y: t.y, kind: t.kind as TrapInstance['kind'], hidden: t.hidden })),
-      chests: s.chests.map((c) => ({ x: c.x, y: c.y, opened: c.opened, locked: c.locked, trapped: c.trapped })),
+      chests: s.chests.map((c) => ({
+        x: c.x, y: c.y, opened: c.opened, locked: c.locked, trapped: c.trapped,
+        trapDiscovered: c.trapDiscovered ?? false,
+        trapType: c.trapType as TrapKind | undefined,
+        lootGenerated: c.lootGenerated ?? false,
+        altar: c.altar ?? false,
+      })),
     };
     this.player.x = s.px;
     this.player.y = s.py;
@@ -393,6 +500,13 @@ export class GameScene extends Phaser.Scene {
       m.skipNext = ms.skipNext;
       m.phase2 = ms.phase2;
       m.spawnedSplit = ms.spawnedSplit;
+      m.statuses = restoreStatuses(ms.statuses); // poison/fear/etc. survive resume (0.3)
+      // Trait runtime state survives resume too; older saves lack it → safe defaults.
+      m.stolenGold = ms.stolenGold ?? 0;
+      m.warningShown = ms.warningShown ?? false;
+      m.lowHpWarned = ms.lowHpWarned ?? false;
+      m.anchorX = ms.anchorX;
+      m.anchorY = ms.anchorY;
       this.monsters.push(m);
       if (!hasTex) continue;
       const sprite = this.add.sprite(0, 0, 'monsters', def.spriteFrame).setVisible(false);
@@ -540,6 +654,7 @@ export class GameScene extends Phaser.Scene {
       const def = getMonster(mob.key);
       const monster = new Monster(def, mob.x, mob.y);
       if (!def.boss && this.rng.chance(eliteChance)) monster.makeElite(this.depth);
+      if (monster.hasTrait('guardsTreasure') && !monster.boss) this.assignAnchor(monster);
       this.monsters.push(monster);
       if (!hasTex) continue;
       const sprite = this.add.sprite(0, 0, 'monsters', def.spriteFrame).setVisible(false);
@@ -556,6 +671,27 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
+  /**
+   * Pin a guardsTreasure monster to a post for the AI leash: the nearest chest
+   * within 5 tiles (so it guards actual loot), else its own spawn tile. Greedy
+   * return-to-anchor only steps onto walkable tiles, so it never wedges in a wall.
+   */
+  private assignAnchor(m: Monster): void {
+    let ax = m.x;
+    let ay = m.y;
+    let best = 6;
+    for (const c of this.map.chests) {
+      const d = Math.max(Math.abs(c.x - m.x), Math.abs(c.y - m.y));
+      if (d <= 5 && d < best) {
+        best = d;
+        ax = c.x;
+        ay = c.y;
+      }
+    }
+    m.anchorX = ax;
+    m.anchorY = ay;
+  }
+
   private buildItems(): void {
     this.items = [];
     if (!this.textures.exists('items')) return;
@@ -569,25 +705,46 @@ export class GameScene extends Phaser.Scene {
     this.placeFloorItem(rollInstance(id, this.rng, qualityDepth), x, y, redraw);
   }
 
-  /** Place an existing instance on the floor, nudging off an occupied tile. */
+  /**
+   * Place an existing instance on the floor, relocating off a wall or an occupied
+   * tile to the nearest reachable floor (0.3.1 fix: a phaser/穿墙怪 that dies *inside*
+   * a wall used to drop loot the player could never reach).
+   */
   private placeFloorItem(inst: ItemInstance, x: number, y: number, redraw = true): void {
-    let tx = x;
-    let ty = y;
-    if (this.items.some((e) => e.x === tx && e.y === ty)) {
-      const free = [[1, 0], [-1, 0], [0, 1], [0, -1]]
-        .map(([dx, dy]) => [x + dx, y + dy] as [number, number])
-        .find(
-          ([ax, ay]) =>
-            ay >= 0 && ax >= 0 && ay < this.map.height && ax < this.map.width &&
-            isWalkable(this.map.tiles[ay][ax]) && !this.items.some((e) => e.x === ax && e.y === ay),
-        );
-      if (free) [tx, ty] = free;
-    }
+    const { x: tx, y: ty } = this.nearestDropTile(x, y);
     const def = getItem(inst.defId);
     const sprite = this.add.image(0, 0, 'items', def.spriteFrame).setScale(0.85).setVisible(false);
     this.tileLayer.add(sprite);
     this.items.push({ x: tx, y: ty, inst, sprite });
     if (redraw) this.renderEntities();
+  }
+
+  /**
+   * The nearest walkable, unoccupied tile to (x, y) — BFS outward (passing *through*
+   * walls) so loot dropped inside a wall ends up on reachable floor (0.3.1).
+   */
+  private nearestDropTile(x: number, y: number): Vec {
+    const ok = (ax: number, ay: number): boolean =>
+      ax >= 0 && ay >= 0 && ax < this.map.width && ay < this.map.height &&
+      isWalkable(this.map.tiles[ay][ax]) && !this.items.some((e) => e.x === ax && e.y === ay);
+    if (ok(x, y)) return { x, y };
+    const W = this.map.width;
+    const seen = new Set<number>([y * W + x]);
+    const queue: Vec[] = [{ x, y }];
+    for (let head = 0; head < queue.length && head < 600; head++) {
+      const cur = queue[head];
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const nx = cur.x + dx;
+        const ny = cur.y + dy;
+        if (nx < 0 || ny < 0 || nx >= W || ny >= this.map.height) continue;
+        const k = ny * W + nx;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        if (ok(nx, ny)) return { x: nx, y: ny };
+        queue.push({ x: nx, y: ny }); // keep expanding through walls toward floor
+      }
+    }
+    return { x, y }; // fallback (no floor found — should never happen)
   }
 
   /** Place the floor's merchant in a non-spawn room with a seeded stock of wares. */
@@ -596,13 +753,22 @@ export class GameScene extends Phaser.Scene {
       this.items.some((e) => e.x === x && e.y === y) ||
       (x === this.map.stairsDown.x && y === this.map.stairsDown.y) ||
       (x === this.map.spawn.x && y === this.map.spawn.y);
-    const candidates = this.map.rooms.filter(
-      (r) => !(r.cx === this.map.spawn.x && r.cy === this.map.spawn.y),
-    );
-    if (!candidates.length) return;
-    const room = candidates[this.rng.range(0, candidates.length - 1)];
-    let mx = room.cx;
-    let my = room.cy;
+    // The merchant-vault template pins the spot (a locked 密室); else pick a room.
+    const vault = !!this.map.merchantVault;
+    let mx: number;
+    let my: number;
+    if (this.map.merchantHint) {
+      mx = this.map.merchantHint.x;
+      my = this.map.merchantHint.y;
+    } else {
+      const candidates = this.map.rooms.filter(
+        (r) => !(r.cx === this.map.spawn.x && r.cy === this.map.spawn.y),
+      );
+      if (!candidates.length) return;
+      const room = candidates[this.rng.range(0, candidates.length - 1)];
+      mx = room.cx;
+      my = room.cy;
+    }
     if (occupied(mx, my)) {
       const free = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]
         .map(([dx, dy]) => [mx + dx, my + dy] as [number, number])
@@ -616,11 +782,17 @@ export class GameScene extends Phaser.Scene {
     }
     // Seeded stock so a resumed floor shows the same wares. Gear has a chance to
     // be a rolled (affixed / enchanted / blessed) piece — better wares cost more.
-    this.shopStock = rollShopStock(this.depth, this.rng, 5).map((id) => {
+    // A vault stocks deeper-rolled, more often-magical wares — at a premium (phase 6).
+    // 商路 (phase 9) adds an extra slot and opens the exotic pool (buying choice).
+    const stockDepth = vault ? this.depth + 2 : this.depth;
+    const gearChance = vault ? 0.75 : 0.5;
+    const priceMult = vault ? 1.4 : 1;
+    const slots = 5 + (this.tradeRoutes ? 1 : 0);
+    this.shopStock = rollShopStock(stockDepth, this.rng, slots, this.tradeRoutes).map((id) => {
       const def = getItem(id);
       let inst: ItemInstance;
-      if (isGear(def.type) && this.rng.chance(0.5)) {
-        inst = rollInstance(id, this.rng, this.depth + 1);
+      if (isGear(def.type) && this.rng.chance(gearChance)) {
+        inst = rollInstance(id, this.rng, stockDepth + 1);
         inst.identified = true; // the merchant's gear is appraised
         if (inst.beatitude === 'cursed') {
           inst.beatitude = 'uncursed';
@@ -631,7 +803,7 @@ export class GameScene extends Phaser.Scene {
       }
       const affixCount = inst.affixes?.length ?? 0;
       const premium = affixCount * 18 + Math.max(0, inst.enchantment) * 8 + (inst.beatitude === 'blessed' ? 12 : 0);
-      return { inst, price: itemPrice(def, this.depth) + premium, sold: false };
+      return { inst, price: Math.round((itemPrice(def, this.depth) + premium) * priceMult), sold: false };
     });
     const hasHeroes = this.textures.exists('heroes') && this.atlas !== null;
     const frame = hasHeroes ? heroAvatarFrame(this.atlas!, 'alchemist') : undefined;
@@ -792,14 +964,20 @@ export class GameScene extends Phaser.Scene {
     }
     const visible = this.map.visible[y][x];
     const parts: string[] = [];
+    let lore = '';
     if (visible) {
       const mob = this.monsters.find((m) => !m.isDead && !m.dying && m.x === x && m.y === y);
-      if (mob) parts.push(`${mob.name}（${mob.hp}/${mob.maxHp}）`);
+      if (mob) {
+        parts.push(`${mob.name}（${mob.hp}/${mob.maxHp}）`);
+        // 图鉴: if this kind has been slain before, surface a short lore hint (phase 9).
+        if (SaveManager.hasSeen(mob.id)) lore = `〔图鉴〕${mob.name}：${monsterLore(getMonster(mob.id))}`;
+      }
       const item = this.items.find((e) => e.x === x && e.y === y);
       if (item) parts.push(this.inventory.name(item.inst));
     }
     parts.push(TILE_DESC[this.map.tiles[y][x]]);
     this.pushLog(`〔此处〕${parts.join('，')}${visible ? '' : '（记忆中）'}`);
+    if (lore) this.pushLog(lore);
   }
 
   // --- tap-to-move (path travel) ----------------------------------------
@@ -958,6 +1136,9 @@ export class GameScene extends Phaser.Scene {
   private updateFOV(): void {
     const { width, height, tiles, explored, visible } = this.map;
     for (let y = 0; y < height; y++) visible[y].fill(false);
+    // 目盲 (裂灯卷轴 / 0.3): sight shrinks sharply while blinded, then recovers as the
+    // status ticks down — a real risk window the player can read on the HUD.
+    const radius = this.player.hasStatus('blinded') ? Math.max(2, this.radius - 4) : this.radius;
     computeFOV(
       {
         width,
@@ -967,7 +1148,7 @@ export class GameScene extends Phaser.Scene {
       },
       this.player.x,
       this.player.y,
-      this.radius,
+      radius,
       (x, y) => {
         if (x >= 0 && y >= 0 && x < width && y < height) {
           visible[y][x] = true;
@@ -1012,8 +1193,10 @@ export class GameScene extends Phaser.Scene {
     for (const m of this.monsters) {
       const spr = this.monsterSprites.get(m);
       if (!spr) continue;
-      spr.setVisible(this.inView(m.x, m.y) && visible[m.y][m.x]);
+      const vis = this.inView(m.x, m.y) && visible[m.y][m.x];
+      spr.setVisible(vis);
       spr.setPosition((m.x - this.player.x) * TILE, (m.y - this.player.y) * TILE);
+      if (vis && m.hasTrait('explodesOnDeath')) this.warnExploder(m);
     }
     for (const it of this.items) {
       it.sprite.setVisible(this.inView(it.x, it.y) && visible[it.y][it.x]);
@@ -1035,10 +1218,65 @@ export class GameScene extends Phaser.Scene {
     return Math.abs(x - this.player.x) <= HALF_COLS && Math.abs(y - this.player.y) <= HALF_ROWS;
   }
 
+  /**
+   * explodesOnDeath learnability: a one-time "danger" tell the first time the
+   * monster is seen, and a second when it drops to a sliver — so its death blast is
+   * never a blind surprise. Both are flag-guarded, so seeing it every frame never
+   * spams the log.
+   */
+  private warnExploder(m: Monster): void {
+    if (!m.warningShown) {
+      m.warningShown = true;
+      this.pushLog(`${m.name}的腹腔泛着不稳定的红光——它似乎会在死亡时炸裂。`);
+    } else if (!m.lowHpWarned && m.hp <= m.maxHp * 0.3) {
+      m.lowHpWarned = true;
+      this.pushLog(`${m.name}周身的余烬剧烈闪烁，即将炸裂！`);
+    }
+  }
+
+  // --- player status input layer (0.3) -----------------------------------
+
+  /**
+   * Frozen input gate: a frozen hero can't act, but the *attempt* still fails and
+   * burns a turn — the ice thaws by one as statuses tick inside the commit. Returns
+   * true when it swallowed the action. UI opens / cancels never call this, so
+   * opening the bag or cancelling an aim while frozen stays free.
+   */
+  private consumedByFreeze(): boolean {
+    if (this.busy || this.menuOpen || this.gameOver) return false;
+    if (!this.player.hasStatus('frozen')) return false;
+    this.stopTravel();
+    this.pushLog('冰霜锁住了你的动作。');
+    this.busy = true;
+    this.commitPlayerAction('frozen-skip');
+    return true;
+  }
+
+  /**
+   * Confusion may scramble an intended cardinal direction into a random one (~35%).
+   * Movement, ranged shots and aimed skills all route through this. The scrambled
+   * direction still runs the normal legality checks, so a bad roll into a wall just
+   * bumps (no turn) like any blocked move, and a skill into nothing fizzles as usual.
+   */
+  private confuseDir(dx: number, dy: number): { dx: number; dy: number } {
+    if (!this.player.hasStatus('confused') || !this.rng.chance(0.35)) return { dx, dy };
+    this.pushLog('你的方向感被搅乱了。');
+    // Scramble to one of the *other* three cardinals, so a scramble is always a real
+    // misdirection (the 35% roll is the actual chance of veering off, not diluted by
+    // re-picking the same way).
+    const others = ([[1, 0], [-1, 0], [0, 1], [0, -1]] as Array<[number, number]>).filter(
+      ([x, y]) => !(x === dx && y === dy),
+    );
+    const [ndx, ndy] = this.rng.pick(others.length ? others : [[1, 0]]);
+    return { dx: ndx, dy: ndy };
+  }
+
   // --- player turn -------------------------------------------------------
 
   private tryMove(dx: number, dy: number): void {
     if (this.busy || this.menuOpen) return;
+    if (this.consumedByFreeze()) return;
+    ({ dx, dy } = this.confuseDir(dx, dy));
     if (dx < 0) this.playerSprite.setFlipX(true);
     else if (dx > 0) this.playerSprite.setFlipX(false);
 
@@ -1058,6 +1296,11 @@ export class GameScene extends Phaser.Scene {
     }
 
     const inBounds = nx >= 0 && ny >= 0 && nx < this.map.width && ny < this.map.height;
+    // Bumping a closed chest opens the interaction menu (no auto-open / auto-trap, 0.3).
+    if (inBounds && this.map.tiles[ny][nx] === TileType.Chest) {
+      this.openChestMenu(nx, ny);
+      return;
+    }
     // Doors: a closed door opens (one turn); a locked door is forced (req. phase 7).
     if (inBounds && this.map.tiles[ny][nx] === TileType.DoorClosed) {
       this.openDoor(nx, ny);
@@ -1081,7 +1324,6 @@ export class GameScene extends Phaser.Scene {
     this.busy = true;
     this.player.x = nx;
     this.player.y = ny;
-    this.turn += 1;
     if (this.anims.exists(heroAnim(this.heroKey, 'walk'))) this.playerSprite.play(heroAnim(this.heroKey, 'walk'), true);
 
     this.updateFOV();
@@ -1116,18 +1358,16 @@ export class GameScene extends Phaser.Scene {
   private onArrive(): void {
     if (this.anims.exists(heroAnim(this.heroKey, 'idle'))) this.playerSprite.play(heroAnim(this.heroKey, 'idle'), true);
     this.resolveTile(this.player.x, this.player.y);
-    if (this.player.isDead) return; // a chest-trap finished us; die() already ran
+    this.checkSpecialRoom();
     this.triggerTrap(this.player.x, this.player.y);
-    if (this.player.isDead) return;
+    if (this.player.isDead) return; // a floor trap finished us; die() already ran
     this.tryPickup();
-    this.endPlayerTurn();
+    this.commitPlayerAction('move');
   }
 
   private resolveTile(x: number, y: number): void {
-    const t = this.map.tiles[y][x];
-    if (t === TileType.Chest) {
-      this.openChest(x, y);
-    } else if (t === TileType.StairsDown) {
+    // Chests are no longer auto-opened on step (0.3) — you bump them to interact.
+    if (this.map.tiles[y][x] === TileType.StairsDown) {
       this.pushLog('你发现了向下的阶梯。点击「下楼」继续深入。');
     }
   }
@@ -1135,6 +1375,7 @@ export class GameScene extends Phaser.Scene {
   /** Tick the player's own status effects (poison/burn/regen) for this turn. */
   private tickPlayerStatuses(): void {
     if (!this.player.statuses.length) return;
+    const before = new Set<StatusType>(this.player.statuses.map((s) => s.type));
     const events = tickStatuses(this.player, '你');
     for (const ev of events) {
       this.pushLog(ev.message);
@@ -1144,6 +1385,10 @@ export class GameScene extends Phaser.Scene {
       } else if (ev.healed > 0) {
         floatNumber(this, PLAY_CX, PLAY_CY - 18, `+${ev.healed}`, Palette.success);
       }
+    }
+    // Announce any status that just wore off (frozen/slowed/confused/feared/…).
+    for (const t of before) {
+      if (!this.player.hasStatus(t) && STATUS_RECOVERY[t]) this.pushLog(STATUS_RECOVERY[t]!);
     }
     this.updateHud();
   }
@@ -1169,9 +1414,9 @@ export class GameScene extends Phaser.Scene {
       if (!m.boss || m.phase2 || m.isDead || m.dying) continue;
       if (m.hp > m.maxHp * 0.5) continue;
       m.phase2 = true;
-      m.attack += 3;
-      m.agility += 2;
-      applyStatus(m, 'regenerating', 6, 2);
+      m.attack += BOSS_PHASE2_ATTACK;
+      m.agility += BOSS_PHASE2_AGILITY;
+      applyStatus(m, 'regenerating', 6, BOSS_PHASE2_REGEN);
       const sx = PLAY_CX + (m.x - this.player.x) * TILE;
       const sy = PLAY_CY + (m.y - this.player.y) * TILE;
       playEffect(this, 'shock', sx, sy, 2.0);
@@ -1180,9 +1425,23 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** End the player's turn: run one round of monster AI + combat, then animate it. */
-  private endPlayerTurn(): void {
+  /**
+   * The single commit entry every *successful, world-changing* player action
+   * funnels through (0.3 phase 1 — unified action economy). It advances the turn
+   * exactly once, ticks the player's statuses, then runs exactly one monster round
+   * (their AI + combat, status ticks, sprung traps), repaints FOV/HUD, saves, and
+   * checks death — each thing once. UI-only actions (opening the bag, inspecting a
+   * tile, cancelling an aim, a failed/blocked attempt) must NOT call this, so the
+   * world never advances twice for one action — nor for free.
+   *
+   * `reason` is diagnostic only (a label for the action that drove the turn).
+   */
+  private commitPlayerAction(reason?: string): void {
     if (this.gameOver) return;
+    // 铁拳僧 combo survives only a continuous melee chain — every other committed
+    // action (move / wait / search / ranged / skill / door / chest / item) breaks it.
+    if (reason !== 'melee') this.breakCombo();
+    this.turn += 1;
     this.tickPlayerStatuses();
     if (this.player.isDead && !this.tryDeathSave()) {
       this.deathCause = '不治的伤势';
@@ -1190,11 +1449,38 @@ export class GameScene extends Phaser.Scene {
       return;
     }
     this.player.regenMana();
+    // 蓄盐 affix: bank a charge each turn (capped), spent to amplify the next skill.
+    if (this.inventory.hasRule('saltcharge')) {
+      this.saltCharge = Math.min(Math.round(this.inventory.ruleParam('saltcharge', 'cap', 3)), this.saltCharge + 1);
+    }
 
     // Monster status effects tick (poison/burn/regen); boss may flip to phase 2.
     this.tickMonsterStatuses();
     this.maybeBossPhase();
 
+    // One monster round. A *slowed* hero lags a beat, so the world gets a second
+    // round before the next move — hard-capped at two, so it can never recurse or
+    // pile up into an unexplained death (each round ends on its own death check).
+    if (this.runMonsterRound()) return; // player died — die() already dispatched
+    if (!this.gameOver && !this.player.isDead && this.player.hasStatus('slowed')) {
+      this.pushLog('迟缓缠身，敌人趁势又逼近一步！');
+      if (this.runMonsterRound()) return;
+    }
+
+    this.persist();
+    this.time.delayedCall(this.ms(170), () => {
+      this.busy = false;
+      this.continueTravel();
+    });
+  }
+
+  /**
+   * Run exactly one monster round: AI + combat, animate it, spring any traps they
+   * stepped onto, repaint and refresh the HUD, then check player death. Returns true
+   * when the round killed the player (die() has been dispatched). Status ticks live
+   * in commitPlayerAction, NOT here, so a slowed double-round never double-ticks.
+   */
+  private runMonsterRound(): boolean {
     const events = runMonsterTurns(this.monsters, {
       player: this.player,
       inBounds: (x, y) => x >= 0 && y >= 0 && x < this.map.width && y < this.map.height,
@@ -1215,13 +1501,9 @@ export class GameScene extends Phaser.Scene {
       const killer = events.find((e) => e.combat?.killed)?.monster;
       if (killer) this.deathCause = `${killer.name}的攻击`;
       this.die();
-      return;
+      return true;
     }
-    this.persist();
-    this.time.delayedCall(this.ms(170), () => {
-      this.busy = false;
-      this.continueTravel();
-    });
+    return false;
   }
 
   // --- combat ------------------------------------------------------------
@@ -1233,7 +1515,6 @@ export class GameScene extends Phaser.Scene {
   /** Player strikes an adjacent monster (req. 8): lunge + effect + resolution. */
   private playerAttack(foe: Monster, dx: number, dy: number): void {
     this.busy = true;
-    this.turn += 1;
     if (dx < 0) this.playerSprite.setFlipX(true);
     else if (dx > 0) this.playerSprite.setFlipX(false);
     if (this.anims.exists(heroAnim(this.heroKey, 'attack'))) this.playerSprite.play(heroAnim(this.heroKey, 'attack'), true);
@@ -1242,8 +1523,16 @@ export class GameScene extends Phaser.Scene {
     const fy = PLAY_CY + dy * TILE;
     playEffect(this, this.cls.magic >= 6 ? 'magic' : 'slash', fx, fy, 1.15);
 
+    // Feared: too rattled to land a clean blow — melee bites ~40% softer (ranged is
+    // unaffected, so a frightened hero can still fight back from a distance).
+    const feared = this.player.hasStatus('feared');
+    if (feared) this.pushLog('恐惧攫住你，这一击软弱无力。');
+    const savedAtk = this.player.attack;
+    if (feared) this.player.attack = Math.max(1, Math.round(this.player.attack * 0.6));
     const result = resolveAttack(this.player, foe, this.rng);
+    if (feared) this.player.attack = savedAtk;
     this.applyMeleeBonus(foe, result);
+    this.applyAffixHit(foe, result, false);
     const spr = this.monsterSprites.get(foe);
     if (result.dodged) {
       floatNumber(this, fx, fy - 14, '闪避', Palette.textDim);
@@ -1264,7 +1553,7 @@ export class GameScene extends Phaser.Scene {
           ? `你暴击${foe.name}，造成 ${result.damage} 点伤害！`
           : `你命中${foe.name}，造成 ${result.damage} 点伤害。`,
       );
-      if (result.killed) this.killMonster(foe, fx, fy);
+      if (result.killed) this.killMonster(foe, fx, fy, true);
     }
 
     this.tweens.add({
@@ -1277,15 +1566,21 @@ export class GameScene extends Phaser.Scene {
       onComplete: () => {
         this.playerSprite.setPosition(PLAY_CX, PLAY_CY);
         if (this.anims.exists(heroAnim(this.heroKey, 'idle'))) this.playerSprite.play(heroAnim(this.heroKey, 'idle'), true);
-        this.endPlayerTurn();
+        this.commitPlayerAction('melee');
       },
     });
   }
 
   /** Remove a slain monster: death fade + particles, grant exp, maybe level up. */
-  private killMonster(foe: Monster, fx: number, fy: number): void {
+  private killMonster(foe: Monster, fx: number, fy: number, byMelee = false): void {
     if (foe.dying) return;
+    const wasBurning = foe.hasStatus('burning');
     foe.dying = true;
+    if (foe === this.comboTarget) {
+      this.comboTarget = null; // 铁拳僧 combo resets when its target dies
+      this.comboCount = 0;
+    }
+    SaveManager.recordSeen(foe.id); // 图鉴: this kind is now known (lore on re-encounter)
     this.kills += 1;
     const idx = this.monsters.indexOf(foe);
     if (idx !== -1) this.monsters.splice(idx, 1);
@@ -1338,13 +1633,27 @@ export class GameScene extends Phaser.Scene {
         this.placeFloorItem(inst, foe.x, foe.y);
         this.pushLog(`精英倒下，留下了${this.inventory.name(inst)}！`);
       }
-    } else {
+    } else if (!foe.spawnedSplit) {
+      // Split-spawned children drop nothing — kept off the loot table to stop a
+      // splitter from being farmed into a pile of items.
       const drop = rollMonsterDrop(this.depth, this.rng);
       if (drop) {
         this.spawnItem(drop, foe.x, foe.y);
         this.pushLog(`${foe.name}掉落了${getItem(drop).name}。`);
       }
     }
+
+    // stealsGold: a thief that dies coughs the coins back up (guard against double
+    // return — reset to 0 — though killMonster already runs at most once per foe).
+    if (foe.stolenGold > 0) {
+      const recovered = foe.stolenGold;
+      foe.stolenGold = 0;
+      this.inventory.addGold(recovered);
+      floatNumber(this, fx, fy - 24, `+${recovered} 金`, Palette.accentBright);
+      this.pushLog(`你夺回了被偷走的 ${recovered} 枚环币。`);
+    }
+
+    this.applyAffixKill(foe, fx, fy, byMelee, wasBurning);
 
     if (foe.hasTrait('explodesOnDeath')) this.explodeOnDeath(foe, fx, fy);
     if (foe.hasTrait('splitsOnDeath') && !foe.spawnedSplit) this.splitOnDeath(foe);
@@ -1394,10 +1703,12 @@ export class GameScene extends Phaser.Scene {
     const n = Math.min(2, spots.length);
     for (let i = 0; i < n; i++) {
       const child = new Monster(def, spots[i].x, spots[i].y);
-      child.spawnedSplit = true;
+      child.spawnedSplit = true; // never splits again (checked in killMonster)
       child.maxHp = Math.max(3, Math.floor(def.hp / 2));
       child.hp = child.maxHp;
       child.attack = Math.max(1, def.attack - 1);
+      child.exp = Math.max(1, Math.floor(def.exp / 3)); // worth far less than the parent
+      // Children start with a clean status list (no inherited poison/fear) on purpose.
       this.monsters.push(child);
       this.addMonsterSprite(child);
     }
@@ -1423,6 +1734,12 @@ export class GameScene extends Phaser.Scene {
     this.busy = true;
     this.invView?.destroy();
     this.invView = undefined;
+    this.shopView?.destroy();
+    this.shopView = undefined;
+    this.chestView?.destroy();
+    this.chestView = undefined;
+    this.altarView?.destroy();
+    this.altarView = undefined;
     this.menuOpen = false;
     SaveManager.clearRun();
     const meta = SaveManager.recordOutcome(this.depth, true, this.kills);
@@ -1455,12 +1772,12 @@ export class GameScene extends Phaser.Scene {
         if (vis) this.tweens.add({ targets: spr, x: lx, y: ly, duration: this.ms(110), ease: 'Quad.easeOut' });
         else spr.setPosition(lx, ly);
       } else if (ev.action.type === 'attack' && ev.combat) {
-        this.presentMonsterAttack(ev.monster, ev.combat, spr);
+        this.presentMonsterAttack(ev.monster, ev.combat, ev.action.ranged, spr);
       }
     }
   }
 
-  private presentMonsterAttack(monster: Monster, combat: AttackResult, spr?: Phaser.GameObjects.Sprite): void {
+  private presentMonsterAttack(monster: Monster, combat: AttackResult, ranged: boolean, spr?: Phaser.GameObjects.Sprite): void {
     const ddx = Math.sign(this.player.x - monster.x);
     const ddy = Math.sign(this.player.y - monster.y);
     if (spr && this.inView(monster.x, monster.y) && this.map.visible[monster.y][monster.x]) {
@@ -1486,13 +1803,38 @@ export class GameScene extends Phaser.Scene {
         : `${monster.name}命中你，造成 ${combat.damage} 点伤害。`,
     );
 
+    // 折光 affix: blunt the FIRST ranged shot you take each floor (heals back the
+    // reduced portion before the post-round death check, so it can be a panic save).
+    if (ranged && this.inventory.hasRule('refract') && !this.refractUsed) {
+      this.refractUsed = true;
+      const back = Math.round(combat.damage * this.inventory.ruleParam('refract', 'reduce', 0.6));
+      if (back > 0) {
+        this.player.heal(back);
+        floatNumber(this, PLAY_CX, PLAY_CY - 30, `+${back}`, Palette.cool);
+        this.pushLog(`折光闪烁，化解了 ${back} 点远程伤害。`);
+      }
+    }
+
+    // On-hit status attacks (0.3.1) — frostslug freezes, miasmacap confuses, shriekbat
+    // fears, etc. Resolved here (scene-side) so the float / log / HUD update together.
+    const oh = monster.onHit;
+    if (oh && (oh.chance === undefined || this.rng.chance(oh.chance))) {
+      const applied = applyStatus(this.player, oh.status, oh.turns, oh.power, this.rng);
+      if (applied > 0) {
+        this.pushLog(`${monster.name}${ONHIT_FLAVOR[oh.status] ?? '使你陷入了异常状态。'}`);
+        this.flashSprite(this.playerSprite);
+        this.updateHud();
+      }
+    }
+
     // On-hit trait flavour (the poison status itself is applied in TurnSystem).
     if (monster.hasTrait('poisonAttack')) this.pushLog(`${monster.name}的毒孢沾上了你。`);
     if (monster.hasTrait('stealsGold') && this.inventory.gold > 0) {
       const stolen = Math.min(this.inventory.gold, this.rng.range(3, 8 + this.depth));
       this.inventory.gold = Math.max(0, this.inventory.gold - stolen);
+      monster.stolenGold += stolen; // it now flees with the loot — recovered on its death
       floatNumber(this, PLAY_CX, PLAY_CY - 32, `-${stolen} 金`, Palette.accent);
-      this.pushLog(`${monster.name}叼走了你 ${stolen} 枚金币！`);
+      this.pushLog(`${monster.name}咬走了你 ${stolen} 枚环币！`);
     }
   }
 
@@ -1555,6 +1897,12 @@ export class GameScene extends Phaser.Scene {
     this.busy = true;
     this.invView?.destroy();
     this.invView = undefined;
+    this.shopView?.destroy();
+    this.shopView = undefined;
+    this.chestView?.destroy();
+    this.chestView = undefined;
+    this.altarView?.destroy();
+    this.altarView = undefined;
     this.menuOpen = false;
     SaveManager.clearRun();
     const meta = SaveManager.recordOutcome(this.depth, false, this.kills);
@@ -1586,7 +1934,10 @@ export class GameScene extends Phaser.Scene {
     let bonus = 0;
     let note = '';
     if (this.cls.id === 'ironfist-monk') {
-      this.comboCount = this.comboTarget === foe ? this.comboCount + 1 : 1;
+      // Combo only grows on a *continuous* melee chain on the same target; it is
+      // reset elsewhere (commitPlayerAction breaks it on any non-melee action, and
+      // killMonster clears it when the target dies). Capped at 5.
+      this.comboCount = Math.min(5, this.comboTarget === foe ? this.comboCount + 1 : 1);
       this.comboTarget = foe;
       const stacks = this.comboCount - 1;
       if (stacks > 0) {
@@ -1596,7 +1947,14 @@ export class GameScene extends Phaser.Scene {
     } else if (this.cls.id === 'chainbreaker') {
       const missing = 1 - this.player.hp / Math.max(1, this.player.maxHp);
       bonus += Math.round((this.player.attack * 0.6 + 2) * missing);
-      if (missing > 0.5) note = '狂怒';
+      if (missing > 0.5) {
+        note = '狂怒';
+        // 断链狂徒 route: fighting on below half HP knits wounds shut — a *dynamic*
+        // regen (never a permanent stat), small enough to reward the gamble without
+        // granting immortality.
+        if (!this.player.hasStatus('regenerating')) this.pushLog('狂怒灼烧伤口，竟自行愈合起来。');
+        applyStatus(this.player, 'regenerating', 2, RAGE_REGEN_POWER);
+      }
     }
     if (bonus > 0) {
       foe.takeDamage(bonus);
@@ -1606,7 +1964,84 @@ export class GameScene extends Phaser.Scene {
     }
   }
 
-  /** 环誓: once per floor the 环骑士 survives a lethal blow, then turns 易伤. */
+  /** Break the 铁拳僧 combo (called on any non-melee action). Logs only mid-chain. */
+  private breakCombo(): void {
+    if (this.comboCount >= 2) this.pushLog(`连击中断（x${this.comboCount} 归零）。`);
+    this.comboTarget = null;
+    this.comboCount = 0;
+  }
+
+  // --- rule-affix hooks (0.3 phase 7) ------------------------------------
+  // Equipment rule effects are dispatched here, NOT scattered as ad-hoc ifs across
+  // combat. Each hook reads the player's currently-equipped rule affixes
+  // (inventory.hasRule / ruleParam) and applies any that match. Important procs log;
+  // high-frequency ones (echo / breakstep) keep their logging terse.
+
+  /** On a connecting hit: 断步 (vs slowed/frozen), 血契 (≤25% hp), and 回声 (ranged). */
+  private applyAffixHit(foe: Monster, result: AttackResult, ranged: boolean): void {
+    if (result.dodged) return;
+    const inv = this.inventory;
+    let bonus = 0;
+    const notes: string[] = [];
+    if ((foe.hasStatus('slowed') || foe.hasStatus('frozen')) && inv.hasRule('breakstep')) {
+      bonus += Math.round(inv.ruleParam('breakstep', 'bonus', 4));
+      notes.push('断步');
+    }
+    if (this.player.hp <= this.player.maxHp * 0.25 && inv.hasRule('bloodpact')) {
+      bonus += Math.round(inv.ruleParam('bloodpact', 'atk', 4));
+      notes.push('血契');
+    }
+    if (bonus > 0 && !result.killed) {
+      foe.takeDamage(bonus);
+      result.damage += bonus;
+      result.killed = foe.isDead;
+      this.pushLog(`〔${notes.join('·')}〕额外造成 ${bonus} 点伤害。`);
+    }
+    // 回声: a ranged hit's echo reveals hidden traps around where it landed and
+    // leaves the target briefly vulnerable (a mark for the follow-up).
+    if (ranged && inv.hasRule('echo')) {
+      const found = this.discoverHidden(foe.x, foe.y, Math.round(inv.ruleParam('echo', 'radius', 2)));
+      if (!foe.isDead) applyStatus(foe, 'vulnerable', Math.round(inv.ruleParam('echo', 'mark', 2)), 1, this.rng);
+      if (found) this.pushLog(`回声荡开，照见 ${found} 处隐藏机关。`);
+    }
+  }
+
+  /** On a kill: 盗火 (burning foe → mana), 裂骨 (melee → splash to adjacent foes). */
+  private applyAffixKill(foe: Monster, _fx: number, _fy: number, byMelee: boolean, wasBurning: boolean): void {
+    const inv = this.inventory;
+    if (wasBurning && inv.hasRule('firetheft')) {
+      const amt = Math.round(inv.ruleParam('firetheft', 'mana', 4));
+      if (this.player.maxMana > 0) {
+        this.player.restoreMana(amt);
+        this.pushLog(`盗火：自烈焰中夺回 ${amt} 点法力。`);
+      } else {
+        this.player.heal(Math.ceil(amt / 2));
+        this.pushLog('盗火：烈焰之力涌入你的躯体。');
+      }
+    }
+    if (byMelee && inv.hasRule('splinter')) {
+      const dmg = Math.round(inv.ruleParam('splinter', 'dmg', 3));
+      let hit = 0;
+      for (const m of [...this.monsters]) {
+        if (m === foe || m.isDead || m.dying) continue;
+        if (Math.abs(m.x - foe.x) + Math.abs(m.y - foe.y) !== 1) continue;
+        m.takeDamage(dmg);
+        const mx = PLAY_CX + (m.x - this.player.x) * TILE;
+        const my = PLAY_CY + (m.y - this.player.y) * TILE;
+        floatNumber(this, mx, my - 12, `-${dmg}`, Palette.danger);
+        hit++;
+        if (m.isDead) this.killMonster(m, mx, my); // chain (not melee → no re-splinter)
+      }
+      if (hit) this.pushLog(`裂骨迸溅，波及 ${hit} 个相邻之敌。`);
+    }
+  }
+
+  /**
+   * 环誓: once per floor the 环骑士 survives a lethal blow, then turns 易伤. Deliberately
+   * gates EVERY death path — every `die()` site first calls this, so a poison/burn tick,
+   * an explosion, a trap, the 裂心 potion's self-damage, or a direct blow all trigger the
+   * oath equally (no source bypasses it). `ringOathUsed` resets per floor and persists.
+   */
   private tryDeathSave(): boolean {
     if (this.cls.id !== 'ring-knight' || this.ringOathUsed || !this.player.isDead) return false;
     this.ringOathUsed = true;
@@ -1624,6 +2059,7 @@ export class GameScene extends Phaser.Scene {
   /** Tapping 技能: validate cost / charges, then aim or cast the class ability. */
   private onSkill(): void {
     if (this.busy || this.menuOpen || this.gameOver || this.aiming) return;
+    if (this.consumedByFreeze()) return;
     const skill = this.cls.skill;
     if (skill.kind === 'passive') {
       this.pushLog(`〔${skill.name}〕是被动技能，会在战斗中自动生效。`);
@@ -1644,21 +2080,39 @@ export class GameScene extends Phaser.Scene {
     this.castSkill(0, 0);
   }
 
-  /** Perform the skill; on success spend resources and pass one turn to the world. */
+  /**
+   * Perform the skill, then settle its cost by outcome (0.3 action economy):
+   *  - notAttempted (no direction / blocked exit): nothing left the player — free,
+   *    no charge, no turn.
+   *  - failedAfterAttempt (e.g. a blade was thrown but hit nothing): the skill DID
+   *    act on the world, so it still spends a charge + a turn (mana is reserved for
+   *    a genuine success).
+   *  - succeeded: spend mana + charge + a turn.
+   */
   private castSkill(dx: number, dy: number): void {
     const skill = this.cls.skill;
-    if (!this.performSkill(dx, dy)) return; // performSkill already logged the reason
-    if (skill.manaCost) this.player.spendMana(skill.manaCost);
+    // 蓄盐: hand the banked charge to the skill being cast (damage skills read it).
+    this.skillSaltBonus = this.inventory.hasRule('saltcharge') ? this.saltCharge : 0;
+    const result = this.performSkill(dx, dy);
+    if (result === 'notAttempted') {
+      this.skillSaltBonus = 0;
+      return; // performSkill already logged the reason; charge is preserved
+    }
+    if (this.skillSaltBonus > 0) {
+      this.pushLog(`蓄盐迸发，这一击的威力随之攀升。`);
+      this.saltCharge = 0; // spent
+    }
+    this.skillSaltBonus = 0;
+    if (skill.manaCost && result === 'succeeded') this.player.spendMana(skill.manaCost);
     if (skill.usesPerFloor !== undefined) this.skillUses = Math.max(0, this.skillUses - 1);
     this.updateHud();
     if (this.gameOver || this.player.isDead) return;
     this.busy = true;
-    this.turn += 1;
-    this.endPlayerTurn();
+    this.commitPlayerAction('skill');
   }
 
-  /** Dispatch to the class ability. Returns false (no turn / charge spent) if it fizzles. */
-  private performSkill(dx: number, dy: number): boolean {
+  /** Dispatch to the class ability, returning how it resolved (see {@link ActionResult}). */
+  private performSkill(dx: number, dy: number): ActionResult {
     switch (this.cls.id) {
       case 'ash-medic':
         return this.skillFirstAid();
@@ -1674,11 +2128,11 @@ export class GameScene extends Phaser.Scene {
         return this.skillLantern();
       default:
         this.pushLog('该职业没有可主动施放的技能。');
-        return false;
+        return 'notAttempted';
     }
   }
 
-  private skillFirstAid(): boolean {
+  private skillFirstAid(): ActionResult {
     const heal = 10 + this.player.magic;
     const before = this.player.hp;
     this.player.heal(heal);
@@ -1687,12 +2141,13 @@ export class GameScene extends Phaser.Scene {
     playEffect(this, 'heal', PLAY_CX, PLAY_CY - 6, 1.3);
     floatNumber(this, PLAY_CX, PLAY_CY - 22, `+${got}`, Palette.success);
     this.pushLog(`灰烬急救：回复 ${got} 点生命${removed.length ? '，并净化了不良状态' : ''}。`);
-    return true;
+    return 'succeeded';
   }
 
-  private skillSaltBurst(): boolean {
-    const radius = 2;
-    const dmg = 5 + Math.floor(this.player.magic * 0.8);
+  private skillSaltBurst(): ActionResult {
+    // 蓄盐 widens the blast (≥2 charge) and always sharpens its bite.
+    const radius = 2 + (this.skillSaltBonus >= 2 ? 1 : 0);
+    const dmg = 5 + Math.floor(this.player.magic * 0.8) + this.skillSaltBonus;
     const targets = this.monsters.filter(
       (m) => !m.isDead && !m.dying && this.chebyshev(m.x, m.y) <= radius,
     );
@@ -1708,10 +2163,10 @@ export class GameScene extends Phaser.Scene {
       if (m.isDead) this.killMonster(m, sx, sy);
     }
     this.pushLog(targets.length ? `星盐炸裂，波及 ${targets.length} 个敌人并令其迟缓。` : '星盐炸裂，但周围空无一人。');
-    return true;
+    return 'succeeded';
   }
 
-  private skillKnell(): boolean {
+  private skillKnell(): ActionResult {
     const radius = 3;
     let feared = 0;
     let slowed = 0;
@@ -1719,32 +2174,56 @@ export class GameScene extends Phaser.Scene {
       if (m.isDead || m.dying || this.chebyshev(m.x, m.y) > radius) continue;
       const sx = PLAY_CX + (m.x - this.player.x) * TILE;
       const sy = PLAY_CY + (m.y - this.player.y) * TILE;
+      // The boss shrugs most of it off — fear/slow land for only 1 turn (it resists
+      // the knell), so 钟鸣 stays a control tool against packs, not a boss-lock.
+      const dur = m.boss ? 1 : 3;
       if (m.tags.includes('undead')) {
-        applyStatus(m, 'feared', 3, 1);
+        applyStatus(m, 'feared', dur, 1, this.rng);
         feared++;
         floatNumber(this, sx, sy - 12, '惧', Palette.cool);
       } else {
-        applyStatus(m, 'slowed', 3, 1);
+        applyStatus(m, 'slowed', dur, 1, this.rng);
         slowed++;
         floatNumber(this, sx, sy - 12, '缓', Palette.textDim);
       }
     }
     playEffect(this, 'shock', PLAY_CX, PLAY_CY, 1.6);
     this.pushLog(`骨钟长鸣：${feared} 个亡灵恐惧，${slowed} 个敌人迟缓。`);
-    return true;
+    return 'succeeded';
   }
 
-  private skillRiftStep(dx: number, dy: number): boolean {
+  private skillRiftStep(dx: number, dy: number): ActionResult {
     if (dx === 0 && dy === 0) {
       this.pushLog('需要选择一个方向。');
-      return false;
+      return 'notAttempted';
     }
+    const mx = this.player.x + dx;
+    const my = this.player.y + dy;
     const nx = this.player.x + dx * 2;
     const ny = this.player.y + dy * 2;
-    const inb = nx >= 0 && ny >= 0 && nx < this.map.width && ny < this.map.height;
-    if (!inb || !isWalkable(this.map.tiles[ny][nx]) || this.monsterAt(nx, ny)) {
-      this.pushLog('那个方向无法穿行而出。');
-      return false;
+    const landInb = nx >= 0 && ny >= 0 && nx < this.map.width && ny < this.map.height;
+    const midInb = mx >= 0 && my >= 0 && mx < this.map.width && my < this.map.height;
+    // Design A — a *true* wall-phase: the MIDDLE tile must be something solid to slip
+    // past (a wall, a shut/locked door, a chest); phasing across open ground does
+    // nothing (the rift needs a barrier to bite on). The LANDING must be standable.
+    const midTile = midInb ? this.map.tiles[my][mx] : TileType.Wall;
+    const midIsBarrier =
+      midTile === TileType.Wall ||
+      midTile === TileType.DoorClosed ||
+      midTile === TileType.DoorLocked ||
+      midTile === TileType.Chest;
+    if (!midIsBarrier) {
+      this.pushLog('裂隙没有咬住现实——前方并无可穿之障。');
+      return 'notAttempted';
+    }
+    const landBlocked =
+      !landInb ||
+      !isWalkable(this.map.tiles[ny][nx]) ||
+      this.monsterAt(nx, ny) !== null ||
+      (this.merchant !== undefined && this.merchant.x === nx && this.merchant.y === ny);
+    if (landBlocked) {
+      this.pushLog('裂隙的另一端无处落脚。');
+      return 'notAttempted';
     }
     this.player.x = nx;
     this.player.y = ny;
@@ -1754,23 +2233,30 @@ export class GameScene extends Phaser.Scene {
     playEffect(this, 'spark', PLAY_CX, PLAY_CY, 1.2);
     this.pushLog('你侧身没入裂隙，穿墙而出。');
     this.resolveTile(this.player.x, this.player.y);
+    // You phase *past* the barrier but materialise fully onto the far tile — a hidden
+    // trap there still springs (no safe blind-phasing onto traps).
+    this.triggerTrap(this.player.x, this.player.y);
     if (!this.player.isDead) this.tryPickup();
-    return true;
+    return 'succeeded';
   }
 
-  private skillShardThrow(dx: number, dy: number): boolean {
+  private skillShardThrow(dx: number, dy: number): ActionResult {
     if (dx === 0 && dy === 0) {
       this.pushLog('需要选择一个方向。');
-      return false;
+      return 'notAttempted';
     }
     const range = 6;
     let tx = this.player.x;
     let ty = this.player.y;
     let foe: Monster | null = null;
+    let hitWall = false;
     for (let i = 1; i <= range; i++) {
       const cx = this.player.x + dx * i;
       const cy = this.player.y + dy * i;
-      if (this.blocksShot(cx, cy)) break;
+      if (this.blocksShot(cx, cy)) {
+        hitWall = true;
+        break;
+      }
       tx = cx;
       ty = cy;
       const m = this.monsterAt(cx, cy);
@@ -1781,10 +2267,12 @@ export class GameScene extends Phaser.Scene {
     }
     this.spawnProjectile(this.player.x, this.player.y, tx, ty, CRIT_COLOR);
     if (!foe) {
-      this.pushLog('碎刃飞掠而过，没有命中目标。');
-      return false;
+      // The blade was actually thrown — it just hit nothing. A launched-but-missed
+      // shot still costs a turn + a charge (no free directional scouting).
+      this.pushLog(hitWall ? '碎刃撞在墙上，迸出细响。' : '碎刃没入黑暗，没有命中目标。');
+      return 'failedAfterAttempt';
     }
-    const dmg = this.player.attack + 4 + Math.floor(this.player.agility / 2);
+    const dmg = this.player.attack + 4 + Math.floor(this.player.agility / 2) + this.skillSaltBonus;
     foe.takeDamage(dmg);
     applyStatus(foe, 'poisoned', 2, 2);
     const fx = PLAY_CX + (foe.x - this.player.x) * TILE;
@@ -1794,10 +2282,10 @@ export class GameScene extends Phaser.Scene {
     floatNumber(this, fx, fy - 14, `-${dmg}`, CRIT_COLOR);
     this.pushLog(`碎刃命中${foe.name}，造成 ${dmg} 点重创并使其流血。`);
     if (foe.isDead) this.killMonster(foe, fx, fy);
-    return true;
+    return 'succeeded';
   }
 
-  private skillLantern(): boolean {
+  private skillLantern(): ActionResult {
     const radius = 6;
     for (let yy = this.player.y - radius; yy <= this.player.y + radius; yy++) {
       for (let xx = this.player.x - radius; xx <= this.player.x + radius; xx++) {
@@ -1808,21 +2296,39 @@ export class GameScene extends Phaser.Scene {
       }
     }
     const found = this.discoverHidden(this.player.x, this.player.y, radius);
+    // 铜灯旅人's lamp also reveals the trap status of nearby chests (req. phase 5).
+    let chestsRead = 0;
+    for (const c of this.map.chests) {
+      if (c.opened || c.trapDiscovered) continue;
+      if (Math.max(Math.abs(c.x - this.player.x), Math.abs(c.y - this.player.y)) > radius) continue;
+      c.trapDiscovered = true;
+      chestsRead++;
+    }
+    // Benefit: the lamp's glare routs creatures of shadow, the undead, and phasers.
     let scared = 0;
     for (const m of this.monsters) {
       if (m.isDead || m.dying || this.chebyshev(m.x, m.y) > radius) continue;
-      if (m.tags.includes('shadow')) {
-        applyStatus(m, 'feared', 2, 1);
+      if (m.tags.includes('shadow') || m.tags.includes('undead') || m.hasTrait('phasesThroughWalls')) {
+        applyStatus(m, 'feared', 2, 1, this.rng);
         scared++;
       }
+    }
+    // Cost: the light betrays your position — ranged hunters in range close a step.
+    let alerted = 0;
+    for (const m of this.monsters) {
+      if (m.isDead || m.dying || m.aiType !== 'ranged' || this.chebyshev(m.x, m.y) > radius) continue;
+      this.stepMonsterToward(m);
+      alerted++;
     }
     playEffect(this, 'heal', PLAY_CX, PLAY_CY, 1.6);
     this.refresh();
     const bits = ['铜灯照亮四周'];
     if (found) bits.push(`照见 ${found} 处隐藏机关`);
+    if (chestsRead) bits.push(`看穿 ${chestsRead} 只宝箱的虚实`);
     if (scared) bits.push(`吓退 ${scared} 个潜影`);
+    if (alerted) bits.push(`却也惊动了 ${alerted} 个远处的猎手`);
     this.pushLog(bits.join('，') + '。');
-    return true;
+    return 'succeeded';
   }
 
   /** Chebyshev (king-move) distance from the player to a tile. */
@@ -1861,6 +2367,8 @@ export class GameScene extends Phaser.Scene {
   private resolveAim(dx: number, dy: number): void {
     const pick = this.aimPick;
     this.exitAim();
+    // Confusion can scramble an aimed direction too (ranged skills / rift-step).
+    ({ dx, dy } = this.confuseDir(dx, dy));
     pick?.(dx, dy);
   }
 
@@ -1902,8 +2410,8 @@ export class GameScene extends Phaser.Scene {
   }
 
   private playerRangedAttack(foe: Monster): void {
+    if (this.consumedByFreeze()) return;
     this.busy = true;
-    this.turn += 1;
     if (foe.x < this.player.x) this.playerSprite.setFlipX(true);
     else if (foe.x > this.player.x) this.playerSprite.setFlipX(false);
     if (this.anims.exists(heroAnim(this.heroKey, 'attack'))) this.playerSprite.play(heroAnim(this.heroKey, 'attack'), true);
@@ -1912,6 +2420,7 @@ export class GameScene extends Phaser.Scene {
     this.spawnProjectile(this.player.x, this.player.y, foe.x, foe.y, Palette.accentBright);
 
     const result = resolveAttack(this.player, foe, this.rng);
+    this.applyAffixHit(foe, result, true);
     const spr = this.monsterSprites.get(foe);
     if (result.dodged) {
       floatNumber(this, fx, fy - 14, '闪避', Palette.textDim);
@@ -1934,7 +2443,7 @@ export class GameScene extends Phaser.Scene {
 
     this.time.delayedCall(this.ms(150), () => {
       if (this.anims.exists(heroAnim(this.heroKey, 'idle'))) this.playerSprite.play(heroAnim(this.heroKey, 'idle'), true);
-      this.endPlayerTurn();
+      this.commitPlayerAction('ranged');
     });
   }
 
@@ -1964,12 +2473,24 @@ export class GameScene extends Phaser.Scene {
 
   private onSearch(): void {
     if (this.busy || this.menuOpen || this.gameOver || this.aiming) return;
+    if (this.consumedByFreeze()) return;
     this.busy = true;
-    this.turn += 1;
-    const radius = this.cls.id === 'copperlamp-wanderer' ? 3 : 1;
+    // 灯芯 affix widens the sweep; 静步 keeps it quiet.
+    const inv = this.inventory;
+    const radius =
+      (this.cls.id === 'copperlamp-wanderer' ? 3 : 1) +
+      (inv.hasRule('wicklight') ? Math.round(inv.ruleParam('wicklight', 'radius', 1)) : 0);
     const found = this.discoverHidden(this.player.x, this.player.y, radius);
     this.pushLog(found ? `你仔细搜索，发现了 ${found} 处隐藏机关！` : '你仔细搜索四周，没有发现异常。');
-    this.endPlayerTurn();
+    // 灯芯's noise can draw a nearby foe — 静步 dampens the risk sharply.
+    if (inv.hasRule('wicklight')) {
+      let attract = inv.ruleParam('wicklight', 'attract', 0.22);
+      if (inv.hasRule('silentstep')) attract *= 0.35;
+      if (this.rng.chance(attract) && this.lureMonsters(6, false) > 0) {
+        this.pushLog('灯芯的响动惊动了什么，有敌人循声而来。');
+      }
+    }
+    this.commitPlayerAction('search');
   }
 
   // --- doors, traps, chests (phase 7) ------------------------------------
@@ -1980,25 +2501,25 @@ export class GameScene extends Phaser.Scene {
     this.refresh();
     this.pushLog('你推开了一扇门。');
     this.busy = true;
-    this.turn += 1;
-    this.endPlayerTurn();
+    this.commitPlayerAction('open-door');
   }
 
   /** Force a locked door: a kick whose odds scale with raw strength (attack). */
   private forceDoor(x: number, y: number): void {
     const chance = Phaser.Math.Clamp(0.25 + this.player.attack * 0.03, 0.2, 0.85);
     this.busy = true;
-    this.turn += 1;
+    this.pushLog('你踹向上锁的门。');
     if (this.rng.chance(chance)) {
       this.map.tiles[y][x] = TileType.Door;
       this.updateFOV();
       this.refresh();
       this.cameras.main.shake(90, 0.004);
-      this.pushLog('砰！你一脚踹开了上锁的门。');
+      this.pushLog('砰！门应声而开。');
     } else {
       this.pushLog('上锁的门纹丝不动，再试一次吧。');
     }
-    this.endPlayerTurn();
+    // A kick is a real attempt: it costs a turn whether it bursts the door or not.
+    this.commitPlayerAction('force-door');
   }
 
   /** Close an adjacent open door (long-press gesture). Returns true if it closed. */
@@ -2011,35 +2532,295 @@ export class GameScene extends Phaser.Scene {
     this.refresh();
     this.pushLog('你关上了一扇门。');
     this.busy = true;
-    this.turn += 1;
-    this.endPlayerTurn();
+    this.commitPlayerAction('close-door');
     return true;
   }
 
-  private openChest(x: number, y: number): void {
+  // --- chest interaction (0.3) -------------------------------------------
+  // A closed chest is now an obstacle you *bump* (like the merchant): it opens a
+  // menu of 检查 / 开锁 / 拆陷阱 / 强开 / 打开 / 取消 rather than auto-resolving on step.
+  // Opening the menu is free; every action is a real attempt that closes the menu and
+  // costs a turn (so monsters close in while you fiddle — "fight now or pry the box?").
+  // 取消 is free. Success odds key off agility / attack, with 裂隙盗 & 铜灯旅人 bonuses.
+
+  /** Whether this class is the lock-and-trap specialist (裂隙盗). */
+  private get isThief(): boolean {
+    return this.cls.id === 'rift-thief';
+  }
+  /** Whether this class is the lantern-bearer (铜灯旅人), better at spotting chest traps. */
+  private get isLamp(): boolean {
+    return this.cls.id === 'copperlamp-wanderer';
+  }
+
+  /** 静步 affix: a flat bonus to lock-pick / disarm odds (phase 7). */
+  private silentBonus(): number {
+    return this.inventory.hasRule('silentstep') ? this.inventory.ruleParam('silentstep', 'bonus', 0.12) : 0;
+  }
+
+  private openChestMenu(x: number, y: number): void {
+    if (this.busy || this.menuOpen || this.gameOver || this.chestView) return;
     const chest = this.map.chests.find((c) => c.x === x && c.y === y && !c.opened);
-    if (chest?.locked) {
-      const chance = Phaser.Math.Clamp(0.3 + this.player.agility * 0.04, 0.2, 0.85);
-      if (!this.rng.chance(chance)) {
-        this.pushLog('宝箱上着锁，你没能撬开（可再试）。');
-        return;
+    if (!chest) return;
+    // A 石龛 altar uses the same Chest tile but a different (bless/curse) interaction.
+    if (chest.altar) {
+      this.openAltar(chest);
+      return;
+    }
+    this.stopTravel();
+    this.menuOpen = true;
+    this.chestView = new ChestView(
+      this,
+      {
+        locked: chest.locked,
+        trapped: chest.trapped,
+        trapDiscovered: !!chest.trapDiscovered,
+        trapName: chest.trapType ? TRAP_NAME[chest.trapType] : '',
+      },
+      {
+        onInspect: () => this.chestAction(() => this.chestInspect(chest)),
+        onPick: () => this.chestAction(() => this.chestPick(chest)),
+        onDisarm: () => this.chestAction(() => this.chestDisarm(chest)),
+        onForce: () => this.chestAction(() => this.chestForce(chest)),
+        onOpen: () => this.chestAction(() => this.chestOpen(chest)),
+        onCancel: () => this.closeChest(),
+      },
+    );
+  }
+
+  private closeChest(): void {
+    this.chestView?.destroy();
+    this.chestView = undefined;
+    this.altarView?.destroy();
+    this.altarView = undefined;
+    this.menuOpen = false;
+  }
+
+  /** Run a chest action: ChestView.finish already tore the menu down — just reset our
+   *  state, perform the logic, then spend a turn (monsters get their round in view). */
+  private chestAction(perform: () => void): void {
+    this.chestView = undefined;
+    this.menuOpen = false;
+    perform();
+    if (this.gameOver || this.player.isDead) return;
+    this.busy = true;
+    this.commitPlayerAction('chest');
+  }
+
+  /** 检查: reveal whether (and what) the chest is trapped. Safe — never springs it. */
+  private chestInspect(chest: ChestInstance): void {
+    const chance = Phaser.Math.Clamp(
+      0.45 + this.player.agility * 0.035 + (this.isThief ? 0.25 : 0) + (this.isLamp ? 0.25 : 0),
+      0.25,
+      0.95,
+    );
+    if (this.rng.chance(chance)) {
+      chest.trapDiscovered = true;
+      if (chest.trapped) {
+        const name = chest.trapType ? TRAP_NAME[chest.trapType] : '未知';
+        this.pushLog(`你仔细检查，发现箱内暗藏${name}机关。`);
+      } else {
+        this.pushLog('你仔细检查，确认这只宝箱没有机关。');
       }
+    } else {
+      this.pushLog('你检查了宝箱，却看不出端倪（可再试）。');
+    }
+  }
+
+  /** 开锁: pick the lock (agility + 裂隙盗). Failure just leaves it locked. */
+  private chestPick(chest: ChestInstance): void {
+    if (!chest.locked) {
+      this.pushLog('宝箱并未上锁。');
+      return;
+    }
+    const chance = Phaser.Math.Clamp(0.3 + this.player.agility * 0.045 + (this.isThief ? 0.3 : 0) + this.silentBonus(), 0.2, 0.9);
+    if (this.rng.chance(chance)) {
       chest.locked = false;
       this.pushLog('咔哒——你撬开了锁。');
+    } else {
+      this.pushLog('锁芯纹丝不动，你没能撬开（可再试）。');
     }
-    this.map.tiles[y][x] = TileType.ChestOpen;
-    if (chest) chest.opened = true;
-    if (chest?.trapped) {
-      this.pushLog('宝箱暗藏机关！');
-      const tr: TrapInstance = { x, y, kind: this.rng.pick(['spike', 'poison', 'snare'] as const), hidden: false };
-      this.applyTrapToPlayer(tr);
+  }
+
+  /** 拆陷阱: disarm a discovered trap (agility + 裂隙盗, slight 铜灯旅人 edge). Failure may spring it. */
+  private chestDisarm(chest: ChestInstance): void {
+    if (!chest.trapped) {
+      this.pushLog('宝箱上并无机关可拆。');
+      return;
+    }
+    const chance = Phaser.Math.Clamp(
+      0.35 + this.player.agility * 0.04 + (this.isThief ? 0.3 : 0) + (this.isLamp ? 0.1 : 0) + this.silentBonus(),
+      0.2,
+      0.95,
+    );
+    if (this.rng.chance(chance)) {
+      chest.trapped = false;
+      this.pushLog('你屏息拆除了宝箱的机关。');
+    } else if (this.rng.chance(0.55)) {
+      this.pushLog('拆除失手——机关触发了！');
+      this.springChestTrap(chest);
+    } else {
+      this.pushLog('拆除失手，但机关没有触发（可再试）。');
+    }
+  }
+
+  /** 强开: smash it open (attack-based). Trapped chests spring; some loot is wrecked. */
+  private chestForce(chest: ChestInstance): void {
+    // Smashing a still-trapped chest springs it regardless of whether the box yields.
+    if (chest.trapped) {
+      this.springChestTrap(chest);
       if (this.player.isDead) return;
     }
-    const loot = rollChestLoot(this.depth, this.rng);
-    for (const id of loot) this.spawnItem(id, x, y, false);
+    const chance = Phaser.Math.Clamp(0.3 + this.player.attack * 0.035, 0.25, 0.9);
+    this.cameras.main.shake(80, 0.004);
+    if (this.rng.chance(chance)) {
+      chest.locked = false;
+      this.pushLog('你猛力砸下，宝箱应声崩裂！');
+      this.generateChestLoot(chest, true); // brute force wrecks part of the haul
+    } else {
+      this.pushLog('宝箱被你砸得变形，却没能撬开（可再试）。');
+    }
+  }
+
+  /** 打开: open an unlocked chest. An undisarmed trap springs first, then loot spills. */
+  private chestOpen(chest: ChestInstance): void {
+    if (chest.locked) {
+      this.pushLog('宝箱锁着，先开锁或强开。');
+      return;
+    }
+    if (chest.trapped) {
+      this.springChestTrap(chest);
+      if (this.player.isDead) return;
+    }
+    this.generateChestLoot(chest, false);
+  }
+
+  /** Spring a chest's trap on the player (reuses the trap damage/status path). */
+  private springChestTrap(chest: ChestInstance): void {
+    const kind: TrapKind = chest.trapType ?? this.rng.pick(['spike', 'poison', 'snare'] as TrapKind[]);
+    chest.trapped = false; // consumed — chests don't re-trap
+    chest.trapDiscovered = true;
+    this.applyTrapToPlayer({ x: chest.x, y: chest.y, kind, hidden: false });
+  }
+
+  /** Produce a chest's loot exactly once; `damaged` (强开) destroys ~40% of it. */
+  private generateChestLoot(chest: ChestInstance, damaged: boolean): void {
+    if (chest.lootGenerated) return; // never double-produce
+    chest.lootGenerated = true;
+    chest.opened = true;
+    this.map.tiles[chest.y][chest.x] = TileType.ChestOpen;
+    let loot = rollChestLoot(this.depth, this.rng);
+    let destroyed = 0;
+    if (damaged) {
+      const kept: string[] = [];
+      for (const id of loot) {
+        if (this.rng.chance(0.4)) destroyed++;
+        else kept.push(id);
+      }
+      loot = kept;
+    }
+    for (const id of loot) this.spawnItem(id, chest.x, chest.y, false);
     this.refresh();
     playEffect(this, 'spark', PLAY_CX, PLAY_CY - 6, 1.2);
-    this.pushLog(`你打开了宝箱，散落出 ${loot.map((id) => getItem(id).name).join('、')}！`);
+    const haul = loot.length ? `散落出 ${loot.map((id) => getItem(id).name).join('、')}` : '却空空如也';
+    const note = destroyed ? `（${destroyed} 件宝物在砸击中损毁）` : '';
+    this.pushLog(`宝箱打开，${haul}${note}。`);
+  }
+
+  // --- 石龛 altar (0.3 phase 6) -------------------------------------------
+
+  private openAltar(chest: ChestInstance): void {
+    if (this.busy || this.menuOpen || this.gameOver || this.altarView) return;
+    this.stopTravel();
+    this.menuOpen = true;
+    this.altarView = new AltarView(this, {
+      onPray: () => {
+        this.altarView = undefined;
+        this.menuOpen = false;
+        this.altarPray(chest);
+        if (this.gameOver || this.player.isDead) return;
+        this.busy = true;
+        this.commitPlayerAction('altar');
+      },
+      onLeave: () => {
+        this.altarView = undefined;
+        this.menuOpen = false;
+      },
+    });
+  }
+
+  /** The altar gamble: bless or curse a random piece of gear, with a slim ill omen. */
+  private altarPray(chest: ChestInstance): void {
+    chest.opened = true;
+    this.map.tiles[chest.y][chest.x] = TileType.ChestOpen;
+    this.refresh();
+    playEffect(this, 'heal', PLAY_CX, PLAY_CY, 1.4);
+    const target = this.randomGearInstance();
+    const roll = this.rng.next();
+    if (roll < 0.45 && target) {
+      const wasCursed = target.beatitude === 'cursed';
+      target.beatitude = 'blessed';
+      target.identified = true;
+      applyStatus(this.player, 'regenerating', 4, 2);
+      this.pushLog(
+        wasCursed
+          ? `圣光萦绕，${this.inventory.name(target)}的诅咒被洗去，化作祝福。`
+          : `圣光萦绕，${this.inventory.name(target)}受到祝福，你周身泛起暖意。`,
+      );
+    } else if (roll < 0.8 && target) {
+      target.beatitude = 'cursed';
+      target.identified = true;
+      applyStatus(this.player, 'vulnerable', 3, 1);
+      this.pushLog(`阴影自石龛渗出，${this.inventory.name(target)}染上了诅咒。`);
+    } else {
+      // Ill omen — a summoned foe, or (no room / no gear) a lingering hex.
+      if (!this.summonNearPlayer()) {
+        applyStatus(this.player, 'feared', 3, 1, this.rng);
+        this.pushLog('石龛发出不祥的嗡鸣，恐惧攫住了你。');
+      }
+    }
+    this.updateHud();
+  }
+
+  /** A random gear instance carried or worn (for the altar gamble); null if none. */
+  private randomGearInstance(): ItemInstance | null {
+    const gear = this.inventory.allInstances().filter((i) => isGear(getItem(i.defId).type));
+    return gear.length ? this.rng.pick(gear) : null;
+  }
+
+  /** Summon a depth-appropriate monster on a free tile beside the player. */
+  private summonNearPlayer(): boolean {
+    const spots = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]
+      .map(([dx, dy]) => ({ x: this.player.x + dx, y: this.player.y + dy }))
+      .filter(
+        (p) =>
+          p.x >= 0 && p.y >= 0 && p.x < this.map.width && p.y < this.map.height &&
+          isWalkable(this.map.tiles[p.y][p.x]) && !this.monsterAt(p.x, p.y),
+      );
+    if (!spots.length) return false;
+    const spot = this.rng.pick(spots);
+    const m = new Monster(getMonster(this.rng.pick(spawnPool(this.depth))), spot.x, spot.y);
+    this.monsters.push(m);
+    this.addMonsterSprite(m);
+    this.pushLog('石龛索取祭品，一头环窟之物循味而至！');
+    return true;
+  }
+
+  /** Show a special room's one-time ambiance line the first time the player enters it. */
+  private checkSpecialRoom(): void {
+    const rooms = this.map.specialRooms;
+    if (!rooms) return;
+    for (const sr of rooms) {
+      if (
+        this.player.x >= sr.x && this.player.x < sr.x + sr.w &&
+        this.player.y >= sr.y && this.player.y < sr.y + sr.h
+      ) {
+        const key = `${sr.x},${sr.y}`;
+        if (!this.announcedRooms.has(key)) {
+          this.announcedRooms.add(key);
+          this.pushLog(sr.ambiance);
+        }
+      }
+    }
   }
 
   private trapAt(x: number, y: number): TrapInstance | undefined {
@@ -2061,15 +2842,15 @@ export class GameScene extends Phaser.Scene {
   /** Attempt to disarm a revealed trap (agility-based); failure springs it. */
   private disarmTrap(x: number, y: number): void {
     this.busy = true;
-    this.turn += 1;
     const tr = this.trapAt(x, y);
     if (!tr) {
       if (this.map.tiles[y][x] === TileType.Trap) this.map.tiles[y][x] = TileType.Floor;
       this.refresh();
-      this.endPlayerTurn();
+      this.commitPlayerAction('disarm-trap');
       return;
     }
-    const chance = Phaser.Math.Clamp(0.4 + this.player.agility * 0.04, 0.2, 0.9);
+    this.pushLog('你俯身拆除机关。');
+    const chance = Phaser.Math.Clamp(0.4 + this.player.agility * 0.04 + this.silentBonus(), 0.2, 0.9);
     if (this.rng.chance(chance)) {
       this.consumeTrap(tr);
       this.pushLog('你小心地拆除了陷阱。');
@@ -2079,7 +2860,8 @@ export class GameScene extends Phaser.Scene {
       this.applyTrapToPlayer(tr);
       if (this.gameOver) return;
     }
-    this.endPlayerTurn();
+    // Disarming is a committed attempt — success or a sprung trap both cost a turn.
+    this.commitPlayerAction('disarm-trap');
   }
 
   /** The player steps on (or springs) a trap. Hidden traps are revealed first. */
@@ -2243,10 +3025,10 @@ export class GameScene extends Phaser.Scene {
 
   private onWait(): void {
     if (this.busy || this.menuOpen) return;
+    if (this.consumedByFreeze()) return;
     this.busy = true;
-    this.turn += 1;
     this.pushLog('你停下脚步，戒备四周。');
-    this.endPlayerTurn();
+    this.commitPlayerAction('wait');
   }
 
   private onInventory(): void {
@@ -2271,28 +3053,44 @@ export class GameScene extends Phaser.Scene {
 
   private useItem(item: ItemInstance): void {
     const res = this.inventory.use(item);
-    this.pushLog(res.message);
+    if (res.message) this.pushLog(res.message);
+    // Resolve the world effect (which logs what happened) BEFORE the identity reveal,
+    // so an unknown item reads "the effect … then you recognise what it was" (0.3).
     if (res.scroll) this.applyScroll(res.scroll, res.beatitude ?? 'uncursed');
+    else if (res.potion) this.applyPotion(res.potion, res.beatitude ?? 'uncursed');
+    if (res.revealName) this.pushLog(`……你认出了这是${res.revealName}。`);
     this.updateHud();
     if (res.ok) this.commitInventoryAction();
   }
 
-  // Equipping / unequipping is gear management: keep the bag open (InventoryView
-  // rebuilds itself after the action) and don't spend a turn — letting monsters act
-  // here would play out unseen behind the open overlay. Only using a consumable,
-  // which has an immediate world effect, closes the bag and advances the turn.
+  // 0.3 action economy — Plan A: equipping, unequipping and dropping are real
+  // world actions, so a *successful* one spends a turn just like using a consumable.
+  // commitInventoryAction closes the bag first, so the monster round plays out in
+  // view rather than unseen behind the overlay (and InventoryView.afterAction sees
+  // `alive === false` and skips its rebuild). A failed attempt — cursed gear that
+  // won't swap or unequip — changes nothing and stays free. Plan A is chosen over
+  // the "free while no enemy is visible" variant for a clearer, always-consistent
+  // rule (the stated preference).
   private equipItem(item: ItemInstance): void {
     const res = this.inventory.equip(item);
     if (res.message) this.pushLog(res.message);
     this.updateHud();
-    if (res.ok) this.persist();
+    if (res.ok) this.commitInventoryAction();
   }
 
   private unequipSlot(slot: EquipSlot): void {
     const res = this.inventory.unequip(slot);
     if (res.message) this.pushLog(res.message);
+    // 赦链: forcing a cursed piece off exacts a price — a bite of HP + vulnerable.
+    if (res.unchainCost) {
+      const bite = Math.max(1, Math.round(this.player.maxHp * 0.1));
+      this.player.takeDamage(bite);
+      applyStatus(this.player, 'vulnerable', 3, 1);
+      floatNumber(this, PLAY_CX, PLAY_CY - 18, `-${bite}`, Palette.danger);
+      this.pushLog(`挣脱诅咒的代价随之而来：你失去 ${bite} 点生命，并变得易伤。`);
+    }
     this.updateHud();
-    if (res.ok) this.persist();
+    if (res.ok) this.commitInventoryAction();
   }
 
   /** Drop a bag item onto the floor (frees a full bag; recoverable by walking back). */
@@ -2301,20 +3099,19 @@ export class GameScene extends Phaser.Scene {
     this.inventory.remove(item);
     this.placeFloorItem(item, this.player.x, this.player.y);
     this.pushLog(`你把${label}丢在了脚边。`);
-    this.persist();
+    this.commitInventoryAction();
   }
 
   /**
-   * A successful inventory action (use / equip / unequip) costs one turn (req.
-   * phase 1): close the overlay so the world is visible, then let the monsters
-   * act exactly once. Opening the menu itself never costs a turn.
+   * A successful inventory action (use / equip / unequip / drop) costs one turn:
+   * close the overlay so the world is visible, then funnel through the unified
+   * commit so the monsters act exactly once. Opening the bag never costs a turn.
    */
   private commitInventoryAction(): void {
     this.closeInventory();
     if (this.gameOver || this.player.isDead) return;
     this.busy = true;
-    this.turn += 1;
-    this.endPlayerTurn();
+    this.commitPlayerAction('inventory');
   }
 
   /** Resolve a scroll's world effect, scaled by its blessing / curse (req. phase 4). */
@@ -2359,22 +3156,230 @@ export class GameScene extends Phaser.Scene {
         break;
       }
       case 'identify': {
-        const n = this.inventory.identifyAllCarried();
-        this.pushLog(n ? `鉴物卷轴生效，看清了 ${n} 件物品的真貌。` : '随身已无未鉴之物。');
+        // 0.3 rebalance: no more whole-bag reveal. Uncursed reveals one item, blessed
+        // three; cursed still reveals one but rattles you (confused).
+        const count = blessed ? 3 : 1;
+        const names = this.inventory.identifyFirst(count);
+        if (names.length) this.pushLog(`鉴物卷轴生效，看清了：${names.join('、')}。`);
+        else this.pushLog('卷轴诵毕，却没有秘密回应你。'); // scroll still consumed
+        if (cursed) {
+          applyStatus(this.player, 'confused', 3, 1, this.rng);
+          this.pushLog('字迹在眼前扭动刺目，你的心神一阵紊乱。');
+          this.updateHud();
+        }
         break;
       }
       case 'uncurse': {
-        const n = this.inventory.uncurseEquipped();
-        this.pushLog(n ? `解缚卷轴生效，${n} 件装备的诅咒被解除。` : '身上并无被诅咒的装备。');
+        if (cursed) {
+          const victim = this.inventory.curseRandomEquipped();
+          if (victim) {
+            this.pushLog(`解缚之力逆转，${victim}缠上了新的诅咒！`);
+          } else {
+            applyStatus(this.player, 'vulnerable', 3, 1);
+            this.pushLog('解缚之力无处着力，反噬使你变得易伤。');
+            this.updateHud();
+          }
+          break;
+        }
+        if (blessed) {
+          const n = this.inventory.uncurseEquipped();
+          this.pushLog(n ? `解缚之力大盛，${n} 件装备的诅咒尽数解除。` : '身上并无被诅咒的装备。');
+        } else {
+          const name = this.inventory.uncurseFirst();
+          this.pushLog(name ? `解缚卷轴生效，${name}的诅咒被解除。` : '身上并无被诅咒的装备。');
+        }
+        break;
+      }
+      case 'lure': {
+        // 引噪: a din draws nearby creatures a step toward you (blessed also muddles
+        // them; cursed reaches farther). A risk — or a way to herd foes for an AoE.
+        const radius = cursed ? 8 : 5;
+        const n = this.lureMonsters(radius, blessed);
+        this.refresh();
+        if (n) this.pushLog(blessed ? `刺响炸开，引来 ${n} 个敌人，并搅乱了它们的心神。` : `刺响炸开，引来了 ${n} 个敌人的注意。`);
+        else this.pushLog('刺响在空荡的回廊里回荡，无人应答。');
+        break;
+      }
+      case 'displace': {
+        // 错位: a random blink; cursed instead swaps you with the nearest foe.
+        if (cursed) {
+          if (this.swapWithNearestMonster()) this.pushLog('空间猛地错位，你与一头敌人对调了位置！');
+          else if (this.blinkPlayer()) this.pushLog('空间错位，你被抛向别处。');
+          else this.pushLog('空间扭动，却无处可去。');
+        } else if (this.blinkPlayer()) {
+          this.pushLog(blessed ? '空间柔和地折叠，你安然挪到了别处。' : '空间错位，你被掷往别处。');
+        } else {
+          this.pushLog('周围无处可去。');
+        }
+        break;
+      }
+      case 'dimlight': {
+        // 裂灯: vision shrinks (目盲). Blessed reveals nearby traps before it dims;
+        // cursed dims longer and adds fear.
+        if (blessed) {
+          const found = this.discoverHidden(this.player.x, this.player.y, 6);
+          applyStatus(this.player, 'blinded', 3, 1);
+          this.updateFOV();
+          this.refresh();
+          this.pushLog(found ? `灯火湮灭前照见了 ${found} 处隐藏机关，随后四周归于昏暗。` : '灯火湮灭前扫过四周，随后归于昏暗。');
+        } else {
+          applyStatus(this.player, 'blinded', cursed ? 7 : 5, 1);
+          if (cursed) applyStatus(this.player, 'feared', 3, 1, this.rng);
+          this.updateFOV();
+          this.refresh();
+          this.pushLog(cursed ? '光亮尽数剥落，黑暗与恐惧一同攫住你。' : '光亮自四周剥落，你的视野骤然收窄。');
+        }
+        this.updateHud();
         break;
       }
     }
-    // A cursed offensive / utility scroll backfires, leaving you briefly vulnerable.
-    if (cursed && action !== 'identify' && action !== 'uncurse') {
+    // A cursed scroll without its own backfire above leaves you briefly vulnerable.
+    if (cursed && (action === 'reveal' || action === 'smite' || action === 'blink' || action === 'vigor')) {
       applyStatus(this.player, 'vulnerable', 3, 1);
       this.pushLog('卷轴的诅咒反噬，你一阵恍惚，变得易伤。');
       this.updateHud();
     }
+  }
+
+  /**
+   * Resolve a status / double-edged potion's world effect, scaled by beatitude (0.3).
+   * Each is a real risk-or-tool: venom (poison, blessed splashes foes), mist (confuse,
+   * blessed muddles foes too), scald (burn — blessed breathes fire at foes instead),
+   * riftheart (lose HP for regeneration, cursed only the loss + vulnerable).
+   */
+  private applyPotion(action: PotionAction, beatitude: Beatitude = 'uncursed'): void {
+    const blessed = beatitude === 'blessed';
+    const cursed = beatitude === 'cursed';
+    switch (action) {
+      case 'venom': {
+        const turns = blessed ? 2 : cursed ? 6 : 4;
+        applyStatus(this.player, 'poisoned', turns, cursed ? 3 : 2, this.rng);
+        this.flashSprite(this.playerSprite);
+        this.pushLog('黑血灌入喉中，毒素在血脉里蔓延——你中毒了。');
+        if (blessed) {
+          let hit = 0;
+          for (const m of this.monsters) {
+            if (m.isDead || m.dying || this.chebyshev(m.x, m.y) > 1) continue;
+            applyStatus(m, 'poisoned', 2, 1, this.rng);
+            hit++;
+          }
+          if (hit) this.pushLog(`你向四周喷出毒沫，${hit} 个邻近的敌人也中了毒。`);
+        }
+        break;
+      }
+      case 'mist': {
+        const turns = cursed ? 6 : blessed ? 2 : 4;
+        applyStatus(this.player, 'confused', turns, 1, this.rng);
+        this.pushLog('一团灰雾涌上心头，你的方向感开始紊乱。');
+        if (blessed) {
+          let hit = 0;
+          for (const m of this.monsters) {
+            if (m.isDead || m.dying || this.chebyshev(m.x, m.y) > 2) continue;
+            applyStatus(m, 'confused', 3, 1, this.rng);
+            hit++;
+          }
+          if (hit) this.pushLog(`迷雾向外弥散，${hit} 个敌人也陷入了混乱。`);
+        }
+        break;
+      }
+      case 'scald': {
+        if (blessed) {
+          let hit = 0;
+          for (const m of this.monsters) {
+            if (m.isDead || m.dying || this.chebyshev(m.x, m.y) > 1) continue;
+            applyStatus(m, 'burning', 3, 2, this.rng);
+            const sx = PLAY_CX + (m.x - this.player.x) * TILE;
+            const sy = PLAY_CY + (m.y - this.player.y) * TILE;
+            playEffect(this, 'magic', sx, sy, 1.0);
+            hit++;
+          }
+          this.pushLog(hit ? `你张口喷出一道烈焰，${hit} 个邻近的敌人被点燃！` : '你喷出一道烈焰，却没烧到谁。');
+        } else {
+          applyStatus(this.player, 'burning', cursed ? 6 : 4, cursed ? 3 : 2, this.rng);
+          this.flashSprite(this.playerSprite);
+          this.pushLog('烈焰自喉间炸开，你被自己点燃了！');
+        }
+        break;
+      }
+      case 'riftheart': {
+        const loss = cursed ? 8 : 6;
+        this.player.takeDamage(loss);
+        this.flashDamage();
+        this.flashSprite(this.playerSprite);
+        floatNumber(this, PLAY_CX, PLAY_CY - 18, `-${loss}`, Palette.danger);
+        if (cursed) {
+          applyStatus(this.player, 'vulnerable', 3, 1);
+          this.pushLog('裂心之力撕扯心脉，只余痛楚与脆弱。');
+        } else {
+          applyStatus(this.player, 'regenerating', blessed ? 6 : 4, blessed ? 3 : 2);
+          this.pushLog('剧痛过后，一股暖流涌入伤口，开始持续愈合。');
+        }
+        this.updateHud();
+        if (this.player.isDead && !this.tryDeathSave()) {
+          this.deathCause = '裂心之痛';
+          this.die();
+        }
+        break;
+      }
+    }
+    this.updateHud();
+  }
+
+  /** 引噪卷轴: draw monsters within `radius` a step toward the player (+ optional confuse). */
+  private lureMonsters(radius: number, confuse: boolean): number {
+    let n = 0;
+    for (const m of this.monsters) {
+      if (m.isDead || m.dying || this.chebyshev(m.x, m.y) > radius) continue;
+      n++;
+      if (confuse) applyStatus(m, 'confused', 3, 1, this.rng);
+      this.stepMonsterToward(m);
+    }
+    return n;
+  }
+
+  /** One greedy step of a monster toward the player onto a free, walkable tile. */
+  private stepMonsterToward(m: Monster): void {
+    const sx = Math.sign(this.player.x - m.x);
+    const sy = Math.sign(this.player.y - m.y);
+    const adx = Math.abs(this.player.x - m.x);
+    const ady = Math.abs(this.player.y - m.y);
+    const order: Array<[number, number]> = adx >= ady ? [[sx, 0], [0, sy]] : [[0, sy], [sx, 0]];
+    for (const [dx, dy] of order) {
+      if (dx === 0 && dy === 0) continue;
+      const nx = m.x + dx;
+      const ny = m.y + dy;
+      if (nx < 0 || ny < 0 || nx >= this.map.width || ny >= this.map.height) continue;
+      if (!isWalkable(this.map.tiles[ny][nx]) || this.monsterAt(nx, ny)) continue;
+      if (nx === this.player.x && ny === this.player.y) continue;
+      m.x = nx;
+      m.y = ny;
+      return;
+    }
+  }
+
+  /** 错位卷轴 (cursed): swap the player with the nearest living monster. */
+  private swapWithNearestMonster(): boolean {
+    let best: Monster | null = null;
+    let bestD = Infinity;
+    for (const m of this.monsters) {
+      if (m.isDead || m.dying) continue;
+      const d = this.chebyshev(m.x, m.y);
+      if (d < bestD) {
+        bestD = d;
+        best = m;
+      }
+    }
+    if (!best) return false;
+    const px = this.player.x;
+    const py = this.player.y;
+    this.player.x = best.x;
+    this.player.y = best.y;
+    best.x = px;
+    best.y = py;
+    this.tileLayer.setPosition(PLAY_CX, PLAY_CY);
+    this.updateFOV();
+    this.refresh();
+    return true;
   }
 
   /** Lines listing every equipped slot (two per row) for the character panel. */
@@ -2397,7 +3402,7 @@ export class GameScene extends Phaser.Scene {
     const skillCost: string[] = [];
     if (s.manaCost) skillCost.push(`耗法 ${s.manaCost}`);
     if (s.usesPerFloor !== undefined) skillCost.push(`本层剩余 ${this.skillUses}/${s.usesPerFloor}`);
-    const strip = statusStrip(p);
+    const details = statusDetails(p);
     const body = [
       `${c.name} · ${c.title}`,
       '',
@@ -2405,7 +3410,7 @@ export class GameScene extends Phaser.Scene {
       `生命　${p.hp} / ${p.maxHp}` + (p.maxMana > 0 ? `　　法力　${p.mana} / ${p.maxMana}` : ''),
       `攻击　${p.attack}　　防御　${p.defense}`,
       `敏捷　${p.agility}　　法术　${p.magic}　　金币　${this.inventory.gold}`,
-      ...(strip ? [`状态　${strip}`] : []),
+      ...(details.length ? [`状态　${details.join('　')}`] : []),
       '',
       ...this.equippedSummary(),
       '',
@@ -2485,8 +3490,17 @@ export class GameScene extends Phaser.Scene {
     });
   }
 
-  /** Buy one ware: charge gold and add it to the bag (validates gold + space). */
+  /**
+   * Buy one ware: charge gold, add it to the bag, then spend a turn (0.3 action
+   * economy — a purchase is a real action). The shop stays open so several wares
+   * can be bought in a row; each *successful* buy advances exactly one monster
+   * round (a busy-guard stops a double-tap from committing twice — the would-be
+   * double-turn risk here). Validation failures (sold out / no gold / full bag)
+   * change nothing and are free. The round plays out behind the dimmed overlay, so
+   * lingering at a merchant while enemies close in carries real risk.
+   */
   private buyFromShop(entry: ShopEntry): void {
+    if (this.busy || this.gameOver) return; // mid-commit re-entrancy guard
     if (entry.sold) return;
     if (this.inventory.gold < entry.price) {
       this.pushLog('金币不足。');
@@ -2503,7 +3517,9 @@ export class GameScene extends Phaser.Scene {
     entry.sold = true;
     this.pushLog(`你买下了${label}（-${entry.price} 金）。`);
     this.updateHud();
-    this.persist();
+    if (this.gameOver || this.player.isDead) return;
+    this.busy = true;
+    this.commitPlayerAction('buy');
   }
 
   // --- HUD / log ---------------------------------------------------------
@@ -2530,6 +3546,7 @@ export class GameScene extends Phaser.Scene {
 
     const fx: string[] = [];
     if (this.player.maxMana > 0) fx.push(`法 ${this.player.mana}/${this.player.maxMana}`);
+    if (this.comboCount >= 2) fx.push(`连击x${this.comboCount}`); // 铁拳僧 combo readout
     const strip = statusStrip(this.player);
     if (strip) fx.push(strip);
     this.fxText.setText(fx.join('  '));
@@ -2560,6 +3577,7 @@ export class GameScene extends Phaser.Scene {
       bag: inv.bag,
       equip: inv.equip,
       ident: this.inventory.ident.serialize(),
+      playerStatuses: serializeStatuses(this.player),
       turn: this.turn,
       kills: this.kills,
       floorSeed: this.floorSeed,

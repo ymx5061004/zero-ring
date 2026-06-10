@@ -108,6 +108,10 @@ export class SettingsView extends Phaser.GameObjects.Container {
     // Auto-pickup gold.
     label(PX + 24, PY + 244, '自动拾取金币');
     this.toggle(PX + PW - 80, PY + 244, s.autoPickupGold, () => { Settings.set({ autoPickupGold: !s.autoPickupGold }); this.rebuild(); });
+
+    // 纯净模式 — a new run ignores the permanent meta stat bonuses (phase 9).
+    label(PX + 24, PY + 298, '纯净模式（关闭局外加成）');
+    this.toggle(PX + PW - 80, PY + 298, s.classicMode, () => { Settings.set({ classicMode: !s.classicMode }); this.rebuild(); });
   }
 
   private toggle(x: number, y: number, value: boolean, onTap: () => void): void {

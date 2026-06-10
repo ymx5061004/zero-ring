@@ -1,6 +1,7 @@
 import type { ClassId } from '../data/classes';
 import type { SerializedInstance } from '../systems/ItemInstance';
 import type { EquipSlot } from '../systems/InventorySystem';
+import type { SerializedStatus } from '../systems/StatusSystem';
 
 /**
  * The persistent state of a single in-progress descent. This is the exact shape
@@ -27,6 +28,8 @@ export interface RunState {
   equip: Partial<Record<EquipSlot, SerializedInstance | null>>;
   /** Per-run identification table (potion/scroll aliases + revealed kinds). */
   ident?: { aliases: Array<[string, string]>; known: string[] };
+  /** Live status effects on the player (0.3). Absent on pre-0.3 saves → none. */
+  playerStatuses?: SerializedStatus[];
   turn: number;
   kills: number;
   /**
@@ -55,7 +58,18 @@ export interface SerializedFloor {
   spawn: { x: number; y: number };
   stairs: { x: number; y: number };
   traps: Array<{ x: number; y: number; kind: string; hidden: boolean }>;
-  chests: Array<{ x: number; y: number; opened: boolean; locked: boolean; trapped: boolean }>;
+  chests: Array<{
+    x: number;
+    y: number;
+    opened: boolean;
+    locked: boolean;
+    trapped: boolean;
+    /** 0.3 chest-interaction fields; absent on pre-0.3 saves → sensible defaults. */
+    trapDiscovered?: boolean;
+    trapType?: string;
+    lootGenerated?: boolean;
+    altar?: boolean;
+  }>;
   monsters: Array<{
     key: string;
     x: number;
@@ -69,6 +83,14 @@ export interface SerializedFloor {
     skipNext: boolean;
     phase2: boolean;
     spawnedSplit: boolean;
+    /** Live status effects on this monster (0.3). Absent on pre-0.3 saves → none. */
+    statuses?: SerializedStatus[];
+    /** Trait runtime state (0.3): stolen gold, exploder tells, guard anchor. */
+    stolenGold?: number;
+    warningShown?: boolean;
+    lowHpWarned?: boolean;
+    anchorX?: number;
+    anchorY?: number;
   }>;
   items: Array<{ inst: SerializedInstance; x: number; y: number }>;
   merchant: { x: number; y: number; stock: Array<{ inst: SerializedInstance; price: number; sold: boolean }> } | null;
@@ -82,6 +104,11 @@ export interface MetaUpgrades {
   blade: number;
   purse: number;
   supplies: number;
+  /**
+   * Horizontal unlock (0.3 phase 9): 商路 — once bought (0→1) the merchant carries an
+   * extra slot and stocks "exotic" wares. Unlocks *choice*, not raw strength.
+   */
+  tradeRoutes: number;
 }
 
 /** Aggregate, cross-run statistics — kept across runs (cleared saves don't touch it). */
@@ -94,4 +121,8 @@ export interface MetaStats {
   shards: number;
   /** Purchased permanent upgrade levels, applied at the start of every run. */
   upgrades: MetaUpgrades;
+  /** 图鉴 (0.3 phase 9): monster ids the player has ever defeated (lore on re-encounter). */
+  seen?: string[];
+  /** Meta schema version, for forward migration. Absent on pre-phase-9 saves. */
+  version?: number;
 }

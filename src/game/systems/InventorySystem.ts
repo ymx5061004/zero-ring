@@ -1,5 +1,5 @@
 import type { Player } from '../entities/Player';
-import { equipSlotOf, getItem, type GearSlot, type ScrollAction } from '../data/items';
+import { equipSlotOf, getAffix, getItem, type AffixRule, type GearSlot, type PotionAction, type ScrollAction } from '../data/items';
 import {
   deserializeInstance,
   displayName,
@@ -66,13 +66,19 @@ export interface UseOutcome {
   message: string;
   /** Set when a scroll was read — the scene resolves the world effect. */
   scroll?: ScrollAction;
+  /** Set when a status/double-edged potion was quaffed — the scene resolves it (0.3). */
+  potion?: PotionAction;
   /** The blessing/curse of the consumed item (scales the scene-side effect). */
   beatitude?: Beatitude;
+  /** The item's true name, set only when this use just revealed a previously-unknown kind. */
+  revealName?: string;
 }
 
 export interface GearOutcome {
   ok: boolean;
   message: string;
+  /** Set when 赦链 forced a cursed piece off — the scene exacts the price (phase 7). */
+  unchainCost?: boolean;
 }
 
 export interface SerializedInventory {
@@ -174,19 +180,60 @@ export class InventorySystem {
     return { ok: true, message: `你装备了${this.name(inst)}。${warn}` };
   }
 
-  /** Unequip a slot, returning the piece to the bag. Cursed gear refuses. */
+  /** Unequip a slot, returning the piece to the bag. Cursed gear refuses — unless
+   *  the hero wears 赦链, which forces it off at a price (signalled via unchainCost). */
   unequip(slot: EquipSlot): GearOutcome {
     const current = this.equipped[slot];
     if (!current) return { ok: false, message: '' };
-    if (current.beatitude === 'cursed') {
+    const forcedOffCurse = current.beatitude === 'cursed';
+    if (forcedOffCurse) {
       current.identified = true;
-      return { ok: false, message: `${this.name(current)}被诅咒，无法卸下（需解缚卷轴）。` };
+      if (!this.hasRule('unchain')) {
+        return { ok: false, message: `${this.name(current)}被诅咒，无法卸下（需解缚卷轴或赦链）。` };
+      }
     }
     if (this.isFull()) return { ok: false, message: '背包已满，无法卸下装备。' };
     this.applyEquip(current, -1);
     this.equipped[slot] = null;
     this.items.push(current);
+    if (forcedOffCurse) {
+      return { ok: true, message: `你借赦链之力，强行卸下了${this.name(current)}。`, unchainCost: true };
+    }
     return { ok: true, message: `你卸下了${this.name(current)}。` };
+  }
+
+  // --- rule affixes (0.3 phase 7) ----------------------------------------
+
+  /** Every rule effect granted by currently-equipped gear (pieces stack). */
+  ruleAffixes(): Array<{ rule: AffixRule; params: Record<string, number>; name: string }> {
+    const out: Array<{ rule: AffixRule; params: Record<string, number>; name: string }> = [];
+    for (const slot of EQUIP_SLOTS) {
+      const inst = this.equipped[slot];
+      if (!inst) continue;
+      for (const key of inst.affixes ?? []) {
+        const a = getAffix(key);
+        if (a?.rule) out.push({ rule: a.rule, params: a.params ?? {}, name: a.name });
+      }
+    }
+    return out;
+  }
+
+  /** Whether any equipped gear grants the given rule effect. */
+  hasRule(rule: AffixRule): boolean {
+    return this.ruleAffixes().some((r) => r.rule === rule);
+  }
+
+  /** The strongest value of a rule's numeric param across equipped gear (or `dflt`). */
+  ruleParam(rule: AffixRule, key: string, dflt = 0): number {
+    let best = dflt;
+    let found = false;
+    for (const r of this.ruleAffixes()) {
+      if (r.rule !== rule) continue;
+      const v = r.params[key] ?? dflt;
+      best = found ? Math.max(best, v) : v;
+      found = true;
+    }
+    return best;
   }
 
   private applyEquip(inst: ItemInstance, sign: number): void {
@@ -205,18 +252,29 @@ export class InventorySystem {
 
   // --- consumables -------------------------------------------------------
 
-  /** Use a consumable; applies (beatitude-scaled) heal/boost or hands a scroll out. */
+  /**
+   * Use a consumable. Scroll- and potion-action items hand the effect to the scene
+   * (which logs it) and report the now-known name via `revealName`, so the scene can
+   * print the effect *first* and the identity *after* (0.3 unknown-item UX). Plain
+   * heal/boost potions resolve their effect inline as before.
+   */
   use(inst: ItemInstance): UseOutcome {
     const def = getItem(inst.defId);
     const p = this.player;
     const wasUnknown = (def.type === 'potion' || def.type === 'scroll') && !this.ident.isIdentified(inst.defId);
     if (def.type === 'potion' || def.type === 'scroll') this.ident.identify(inst.defId);
     inst.identified = true;
+    const revealName = wasUnknown ? def.name : undefined;
 
     if (def.effects.scroll) {
       this.consumeOne(inst);
-      const msg = wasUnknown ? `你诵读了一卷未知卷轴——竟是${def.name}。` : `你诵读了${def.name}。`;
-      return { ok: true, message: msg, scroll: def.effects.scroll, beatitude: inst.beatitude };
+      const message = wasUnknown ? '你展开一卷来历不明的卷轴，低声诵读。' : `你诵读了${def.name}。`;
+      return { ok: true, message, scroll: def.effects.scroll, beatitude: inst.beatitude, revealName };
+    }
+    if (def.effects.potion) {
+      this.consumeOne(inst);
+      const message = wasUnknown ? '你饮下一份来历不明的药剂。' : `你饮下了${def.name}。`;
+      return { ok: true, message, potion: def.effects.potion, beatitude: inst.beatitude, revealName };
     }
 
     const parts: string[] = [];
@@ -224,6 +282,11 @@ export class InventorySystem {
       let heal = def.effects.heal;
       if (inst.beatitude === 'blessed') heal = Math.round(heal * 1.5);
       else if (inst.beatitude === 'cursed') heal = Math.round(heal * 0.5);
+      // 灰烬医师 route: the medic wrings more from every restorative — applied AFTER the
+      // beatitude scale, so a cursed potion is still worse than an uncursed one (phase 8).
+      if (p.classId === 'ash-medic') heal = Math.round(heal * 1.3);
+      // 血契: while clinging to life, all healing is halved (phase 7).
+      if (this.hasRule('bloodpact') && p.hp <= p.maxHp * 0.25) heal = Math.round(heal * 0.5);
       const before = p.hp;
       p.heal(heal);
       const got = p.hp - before;
@@ -238,8 +301,8 @@ export class InventorySystem {
     }
     this.consumeOne(inst);
     const detail = parts.length ? `，${parts.join('、')}` : '';
-    const lead = wasUnknown ? `你用下一份未知之物——竟是${def.name}` : `你使用了${def.name}`;
-    return { ok: true, message: `${lead}${detail}。`, beatitude: inst.beatitude };
+    const lead = wasUnknown ? '你饮下一份来历不明的药剂' : `你使用了${def.name}`;
+    return { ok: true, message: `${lead}${detail}。`, beatitude: inst.beatitude, revealName };
   }
 
   /** All instances in play (bag + equipped). */
@@ -263,7 +326,31 @@ export class InventorySystem {
     return count;
   }
 
-  /** 解缚卷轴: lift curses from equipped gear so it can be removed. */
+  /** Whether a carried instance still holds a secret (alias not learned, or beatitude hidden). */
+  private isUnknown(inst: ItemInstance): boolean {
+    const def = getItem(inst.defId);
+    if ((def.type === 'potion' || def.type === 'scroll') && !this.ident.isIdentified(inst.defId)) return true;
+    return !inst.identified;
+  }
+
+  /**
+   * 鉴物卷轴 (0.3 rebalance): identify up to `n` still-unknown carried items, in bag
+   * order (equipped last). Returns the revealed display names. No longer reveals the
+   * whole bag at once — uncursed reveals one, blessed three.
+   */
+  identifyFirst(n: number): string[] {
+    const names: string[] = [];
+    for (const inst of this.allInstances()) {
+      if (names.length >= n) break;
+      if (!this.isUnknown(inst)) continue;
+      this.ident.identify(inst.defId);
+      inst.identified = true;
+      names.push(this.name(inst));
+    }
+    return names;
+  }
+
+  /** 解缚卷轴 (blessed): lift curses from ALL equipped gear so it can be removed. */
   uncurseEquipped(): number {
     let count = 0;
     for (const slot of EQUIP_SLOTS) {
@@ -275,6 +362,31 @@ export class InventorySystem {
       }
     }
     return count;
+  }
+
+  /** 解缚卷轴 (uncursed): lift the curse from the FIRST cursed piece. Returns its name. */
+  uncurseFirst(): string | null {
+    for (const slot of EQUIP_SLOTS) {
+      const cur = this.equipped[slot];
+      if (cur && cur.beatitude === 'cursed') {
+        cur.beatitude = 'uncursed';
+        cur.identified = true;
+        return this.name(cur);
+      }
+    }
+    return null;
+  }
+
+  /** Backfire: curse a random non-cursed equipped piece (so it can't be removed). */
+  curseRandomEquipped(): string | null {
+    const victims = EQUIP_SLOTS.map((s) => this.equipped[s]).filter(
+      (i): i is ItemInstance => i !== null && i.beatitude !== 'cursed',
+    );
+    if (!victims.length) return null;
+    const v = victims[Math.floor(Math.random() * victims.length)];
+    v.beatitude = 'cursed';
+    v.identified = true;
+    return this.name(v);
   }
 
   // --- persistence -------------------------------------------------------

@@ -9,10 +9,12 @@ export interface GameSettings {
   sound: boolean;
   animSpeed: AnimSpeed;
   autoPickupGold: boolean;
+  /** 纯净模式 (0.3 phase 9): a NEW run ignores the vertical meta stat bonuses. */
+  classicMode: boolean;
 }
 
 const KEY = 'zero-ring/settings/v1';
-const DEFAULTS: GameSettings = { sound: true, animSpeed: 'normal', autoPickupGold: true };
+const DEFAULTS: GameSettings = { sound: true, animSpeed: 'normal', autoPickupGold: true, classicMode: false };
 
 function read(): GameSettings {
   try {

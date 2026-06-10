@@ -1,7 +1,7 @@
 {
   "name": "zero-ring",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.1",
   "type": "module",
   "description": "《零环》— a mobile portrait-first, fully original roguelike built with Vite + TypeScript + Phaser 3.",
   "scripts": {

@@ -162,12 +162,23 @@ export class ShopView extends Phaser.GameObjects.Container {
 
   private close(): void {
     if (this.closed) return;
-    this.closed = true;
-    this.closeBtn?.destroy();
-    this.dynBtns.forEach((b) => b.destroy());
-    this.dynBtns = [];
-    unblockUi();
     this.handlers.onClose();
-    this.destroy();
+    this.destroy(); // does the actual teardown (idempotent)
+  }
+
+  /**
+   * Teardown lives here (not just in close()) so the owner can tear the shop down
+   * directly — e.g. the run ends on a purchase-driven monster round — and a scene
+   * shutdown still unblocks the UI and frees the DOM buttons exactly once.
+   */
+  override destroy(fromScene?: boolean): void {
+    if (!this.closed) {
+      this.closed = true;
+      this.closeBtn?.destroy();
+      this.dynBtns.forEach((b) => b.destroy());
+      this.dynBtns = [];
+      unblockUi();
+    }
+    super.destroy(fromScene);
   }
 }

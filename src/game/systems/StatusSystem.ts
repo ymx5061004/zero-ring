@@ -16,7 +16,8 @@ export type StatusType =
   | 'feared'
   | 'slowed'
   | 'vulnerable'
-  | 'regenerating';
+  | 'regenerating'
+  | 'blinded';
 
 /** Damage / effect channels, used for resistances. */
 export type DamageType = 'physical' | 'poison' | 'fire' | 'ice' | 'mind';
@@ -54,6 +55,7 @@ export const STATUS_META: Record<StatusType, StatusMeta> = {
   slowed: { name: '迟缓', tag: '缓' },
   vulnerable: { name: '易伤', tag: '伤' },
   regenerating: { name: '回复', tag: '愈', good: true },
+  blinded: { name: '目盲', tag: '盲' },
 };
 
 export type Resistances = Partial<Record<DamageType, number>>;
@@ -155,4 +157,48 @@ export function cleanse(entity: Entity): StatusType[] {
 /** A compact "中毒3 易伤2" strip for the HUD (empty string when clean). */
 export function statusStrip(entity: Entity): string {
   return entity.statuses.map((s) => `${STATUS_META[s.type].tag}${s.turns}`).join(' ');
+}
+
+/** Full status names + remaining turns for the character panel (e.g. "中毒 3 回合"). */
+export function statusDetails(entity: Entity): string[] {
+  return entity.statuses.map((s) => `${STATUS_META[s.type].name} ${s.turns} 回合`);
+}
+
+// --- persistence (0.3) ---------------------------------------------------
+
+/**
+ * Serialized form of a status for the save. `turns` is written as `duration`;
+ * `source` is reserved for a future originator id (never required on load).
+ */
+export interface SerializedStatus {
+  type: StatusType;
+  duration: number;
+  power?: number;
+  source?: string;
+}
+
+/** Capture an entity's live statuses for the save (player + every monster). */
+export function serializeStatuses(entity: Entity): SerializedStatus[] {
+  return entity.statuses.map((s) => ({ type: s.type, duration: s.turns, power: s.power }));
+}
+
+/**
+ * Rebuild a status list from a save. Tolerant by contract so a corrupt, partial or
+ * future save can never crash a load: a missing list yields none, an unknown `type`
+ * is skipped with a warning, expired (<=0 turn) entries are dropped, and a dangling
+ * `source` is simply ignored.
+ */
+export function restoreStatuses(list?: SerializedStatus[] | null): StatusInstance[] {
+  if (!Array.isArray(list)) return [];
+  const out: StatusInstance[] = [];
+  for (const s of list) {
+    if (!s || !(s.type in STATUS_META)) {
+      console.warn('[零环] 跳过未知状态：', s && (s as { type?: unknown }).type);
+      continue;
+    }
+    const turns = Math.max(0, Math.floor(s.duration ?? 0));
+    if (turns <= 0) continue;
+    out.push({ type: s.type, turns, power: Math.max(1, Math.floor(s.power ?? 1)) });
+  }
+  return out;
 }

@@ -5,6 +5,7 @@ import { blockUi, unblockUi } from './UiLayer';
 import { SLOT_LABEL, type EquipSlot, type InventorySystem } from '../systems/InventorySystem';
 import {
   equipSlotOf,
+  getAffix,
   getItem,
   RARITY_COLOR,
   RARITY_NAME,
@@ -13,7 +14,7 @@ import {
   type ItemDef,
   type StatKey,
 } from '../data/items';
-import { affixesOf, equipBonus, type ItemInstance } from '../systems/ItemInstance';
+import { equipBonus, type ItemInstance } from '../systems/ItemInstance';
 
 export interface InventoryHandlers {
   onUse: (item: ItemInstance) => void;
@@ -68,6 +69,17 @@ const SCROLL_DESC: Record<string, string> = {
   smite: '灼伤视野内敌人',
   blink: '瞬间挪移',
   vigor: '回满生命',
+  identify: '鉴定随身物品',
+  uncurse: '解除装备诅咒',
+  lure: '引来附近敌人',
+  displace: '随机错位传送',
+  dimlight: '视野收窄（目盲）',
+};
+const POTION_DESC: Record<string, string> = {
+  venom: '使自身中毒',
+  mist: '使自身混乱',
+  scald: '灼烧（火）',
+  riftheart: '损血换回复（双刃）',
 };
 
 function effectSummary(item: ItemDef): string {
@@ -81,6 +93,7 @@ function effectSummary(item: ItemDef): string {
   if (e.heal) parts.push(`回复 ${e.heal >= 999 ? '全部' : e.heal} 生命`);
   if (e.boost?.maxHp) parts.push(`生命上限 +${e.boost.maxHp}（永久）`);
   if (e.scroll) parts.push(SCROLL_DESC[e.scroll] ?? '');
+  if (e.potion) parts.push(POTION_DESC[e.potion] ?? '');
   if (e.gold) parts.push(`金币 +${e.gold}`);
   return parts.join('　');
 }
@@ -315,13 +328,22 @@ export class InventoryView extends Phaser.GameObjects.Container {
     }
     // Affix names — the heart of the "找到神装" moment, in bright gold.
     if (!unidentified && gear) {
-      const names = affixesOf(item).map((a) => a.name);
-      if (names.length) {
+      const affixes = (item.affixes ?? []).map(getAffix).filter((a): a is NonNullable<typeof a> => !!a);
+      if (affixes.length) {
         const ax = this.scene.add
-          .text(left, y, `词缀　${names.join(' · ')}`, { fontFamily: FontFamily, fontSize: '12px', color: toCss(Palette.accentBright), fontStyle: 'bold', wordWrap: { width: PW - 56 } })
+          .text(left, y, `词缀　${affixes.map((a) => a.name).join(' · ')}`, { fontFamily: FontFamily, fontSize: '12px', color: toCss(Palette.accentBright), fontStyle: 'bold', wordWrap: { width: PW - 56 } })
           .setOrigin(0, 0);
         add(ax);
         y += ax.height + 6;
+        // Rule affixes carry a description (numeric affixes are self-evident from the stat line).
+        for (const a of affixes) {
+          if (!a.description) continue;
+          const dt = this.scene.add
+            .text(left, y, `· ${a.name}：${a.description}`, { fontFamily: FontFamily, fontSize: '11px', color: toCss(Palette.textDim), wordWrap: { width: PW - 56 } })
+            .setOrigin(0, 0);
+          add(dt);
+          y += dt.height + 4;
+        }
       }
     }
     y += 4;

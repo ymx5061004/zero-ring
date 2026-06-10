@@ -71,7 +71,18 @@ function rollAffixes(def: ItemDef, rng: RNG, depth: number): string[] {
     if (rng.next() >= chance) break;
     const avail = pool.filter((a) => !keys.includes(a.key));
     if (!avail.length) break;
-    keys.push(avail[rng.range(0, avail.length - 1)].key);
+    // Weighted pick — rule affixes carry weight < 1 so they stay a minority (phase 7).
+    const total = avail.reduce((s, a) => s + (a.weight ?? 1), 0);
+    let r = rng.next() * total;
+    let chosen = avail[avail.length - 1];
+    for (const a of avail) {
+      r -= a.weight ?? 1;
+      if (r <= 0) {
+        chosen = a;
+        break;
+      }
+    }
+    keys.push(chosen.key);
     chance *= 0.45; // a second affix is much rarer
   }
   return keys;
@@ -149,7 +160,7 @@ export function equipBonus(inst: ItemInstance): StatBlock {
   }
   for (const key of inst.affixes ?? []) {
     const affix = getAffix(key);
-    if (!affix) continue;
+    if (!affix?.bonus) continue;
     for (const [k, v] of Object.entries(affix.bonus)) b[k as StatKey] += v ?? 0;
   }
   if (inst.enchantment) {

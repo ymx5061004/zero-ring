@@ -1,6 +1,7 @@
 import type { RNG } from '../core/RNG';
 import { spawnPool } from '../data/monsters';
 import { rollFloorItem } from '../systems/LootSystem';
+import { applyRoomTemplates, type SpecialRoom, type TemplateContext } from './RoomTemplates';
 
 /** Logical tile kinds. Values double as a stable id; rendering maps them to art. */
 export enum TileType {
@@ -53,14 +54,22 @@ export interface TrapInstance {
   hidden: boolean;
 }
 
-/** A lockable / trappable chest, decoupled from the tile grid (req. phase 7). */
+/** A lockable / trappable chest, decoupled from the tile grid (req. phase 7 / 0.3). */
 export interface ChestInstance {
   x: number;
   y: number;
   opened: boolean;
   locked: boolean;
-  /** Springs a trap the first time it is forced open. */
+  /** Hides a trap until it is sprung or disarmed. */
   trapped: boolean;
+  /** Set once 检查 / 灯火 has revealed whether (and what) this chest is trapped (0.3). */
+  trapDiscovered?: boolean;
+  /** Which trap it springs — rolled at generation so 检查 can name it (0.3). */
+  trapType?: TrapKind;
+  /** Guards against producing loot twice (0.3). */
+  lootGenerated?: boolean;
+  /** A 石龛 altar (phase 6) — bumping it opens a bless/curse gamble, not the loot menu. */
+  altar?: boolean;
 }
 
 export interface Vec {
@@ -103,6 +112,12 @@ export interface DungeonMap {
   traps: TrapInstance[];
   /** Interactive chests with lock / trap state (0.2). */
   chests: ChestInstance[];
+  /** Themed special rooms (phase 6) — used for one-time ambiance logs on entry. */
+  specialRooms?: SpecialRoom[];
+  /** Where the merchant-vault template wants the merchant (else the scene picks). */
+  merchantHint?: Vec;
+  /** The merchant-vault flag — richer, pricier stock (phase 6). */
+  merchantVault?: boolean;
 }
 
 
@@ -166,10 +181,25 @@ export function generateDungeon(depth: number, rng: RNG): DungeonMap {
   }
   const stairsDown: Vec = { x: far.cx, y: far.cy };
   tiles[stairsDown.y][stairsDown.x] = TileType.StairsDown;
+  const stairsRoomIndex = rooms.indexOf(far);
 
-  // Scatter traps and chests on open floor (never on spawn or stairs).
+  // Object lists start empty so special-room templates can seed themed content
+  // first; the usual loot then scatters over the rooms templates did NOT claim.
+  const traps: TrapInstance[] = [];
+  const chests: ChestInstance[] = [];
+  const monsters: MapEntity[] = [];
+  const items: MapEntity[] = [];
+
+  const ctx: TemplateContext = {
+    tiles, traps, chests, monsters, items,
+    spawn, stairs: stairsDown, depth, rng, width, height,
+  };
+  const { claimed, specialRooms } = applyRoomTemplates(rooms, stairsRoomIndex, ctx);
+
+  // Open floor cells in *unclaimed* rooms (never spawn / stairs) take the scatter.
   const open: Vec[] = [];
   for (const r of rooms) {
+    if (claimed.has(r)) continue;
     for (let yy = r.y; yy < r.y + r.h; yy++) {
       for (let xx = r.x; xx < r.x + r.w; xx++) {
         if (tiles[yy][xx] !== TileType.Floor) continue;
@@ -182,29 +212,28 @@ export function generateDungeon(depth: number, rng: RNG): DungeonMap {
   let cursor = 0;
   // Hidden traps live in their own list; the tile underneath stays floor so the
   // trap is invisible until searched / triggered (req. phase 7).
-  const traps: TrapInstance[] = [];
   const trapKinds: TrapKind[] = ['spike', 'poison', 'teleport', 'snare'];
   const trapCount = rng.range(4, 7);
   for (let i = 0; i < trapCount && cursor < open.length; i++, cursor++) {
     traps.push({ x: open[cursor].x, y: open[cursor].y, kind: rng.pick(trapKinds), hidden: true });
   }
-  const chests: ChestInstance[] = [];
   const chestCount = rng.range(3, 5);
   for (let i = 0; i < chestCount && cursor < open.length; i++, cursor++) {
     const c = open[cursor];
     tiles[c.y][c.x] = TileType.Chest;
+    const trapped = rng.chance(0.3);
     chests.push({
       x: c.x,
       y: c.y,
       opened: false,
       locked: rng.chance(0.3),
-      trapped: rng.chance(0.3),
+      trapped,
+      // The kind is rolled now so 检查 can reveal it deterministically per seed.
+      trapType: trapped ? rng.pick(['spike', 'poison', 'snare', 'teleport'] as TrapKind[]) : undefined,
     });
   }
 
   // Remaining open floor cells host monsters and item pickups.
-  const monsters: MapEntity[] = [];
-  const items: MapEntity[] = [];
   const pool = spawnPool(depth);
   const monsterCount = rng.range(6, 10);
   for (let i = 0; i < monsterCount && cursor < open.length; i++, cursor++) {
@@ -215,6 +244,13 @@ export function generateDungeon(depth: number, rng: RNG): DungeonMap {
     items.push({ x: open[cursor].x, y: open[cursor].y, key: rollFloorItem(depth, rng) });
   }
 
+  // Safety: the stairs must stay reachable (doors count as passable — the player can
+  // open / kick them). Templates never carve walls, so this always holds; it guards
+  // against a future template accidentally sealing the floor.
+  if (!stairsReachable(tiles, spawn, stairsDown, width, height)) {
+    console.warn('[零环] 特殊房间可能影响了连通性（已忽略）。');
+  }
+
   // Fog-of-war state, all hidden until explored.
   const explored: boolean[][] = [];
   const visible: boolean[][] = [];
@@ -223,7 +259,31 @@ export function generateDungeon(depth: number, rng: RNG): DungeonMap {
     visible.push(new Array(width).fill(false));
   }
 
-  return { width, height, tiles, rooms, spawn, stairsDown, explored, visible, monsters, items, traps, chests };
+  return {
+    width, height, tiles, rooms, spawn, stairsDown, explored, visible,
+    monsters, items, traps, chests,
+    specialRooms, merchantHint: ctx.merchantHint, merchantVault: ctx.merchantVault,
+  };
+}
+
+/** Flood-fill reachability over non-wall tiles (doors / chests count as passable). */
+function stairsReachable(tiles: TileType[][], from: Vec, to: Vec, width: number, height: number): boolean {
+  const seen = new Set<number>([from.y * width + from.x]);
+  const queue: Vec[] = [from];
+  for (let head = 0; head < queue.length; head++) {
+    const cur = queue[head];
+    if (cur.x === to.x && cur.y === to.y) return true;
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const nx = cur.x + dx;
+      const ny = cur.y + dy;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+      const k = ny * width + nx;
+      if (seen.has(k) || tiles[ny][nx] === TileType.Wall) continue;
+      seen.add(k);
+      queue.push({ x: nx, y: ny });
+    }
+  }
+  return false;
 }
 
 function overlaps(a: Room, b: Room): boolean {

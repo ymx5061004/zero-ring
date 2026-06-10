@@ -13,6 +13,8 @@ export class Monster extends Entity {
   readonly spriteFrame: number;
   readonly tags: MonsterTag[];
   readonly traits: MonsterTrait[];
+  /** Status inflicted on a successful hit (0.3.1); resolved in presentMonsterAttack. */
+  readonly onHit?: MonsterDef['onHit'];
   readonly boss: boolean;
   /** An elevated variant: tougher, hits harder, worth more, drops better (0.3). */
   elite = false;
@@ -24,6 +26,16 @@ export class Monster extends Entity {
   spawnedSplit = false;
   /** Set once its death has been handled, so it is dispatched only once. */
   dying = false;
+
+  // --- 0.3 trait runtime state (all optional / default, so old saves load) ---
+  /** guardsTreasure: the post this monster defends (set at spawn). */
+  anchorX?: number;
+  anchorY?: number;
+  /** stealsGold: coins lifted off the player, dropped back when it dies. */
+  stolenGold = 0;
+  /** explodesOnDeath: one-shot "danger" tells, so the threat is learnable. */
+  warningShown = false;
+  lowHpWarned = false;
 
   constructor(def: MonsterDef, x: number, y: number) {
     super({
@@ -42,6 +54,7 @@ export class Monster extends Entity {
     this.spriteFrame = def.spriteFrame;
     this.tags = def.tags ?? [];
     this.traits = def.traits ?? [];
+    this.onHit = def.onHit;
     this.boss = def.boss ?? false;
     this.x = x;
     this.y = y;

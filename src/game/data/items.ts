@@ -9,7 +9,18 @@
 
 export type ItemType = 'weapon' | 'armor' | 'potion' | 'scroll' | 'food' | 'ring' | 'gold';
 export type Rarity = 'common' | 'uncommon' | 'rare' | 'epic';
-export type ScrollAction = 'reveal' | 'smite' | 'blink' | 'vigor' | 'identify' | 'uncurse';
+export type ScrollAction =
+  | 'reveal'
+  | 'smite'
+  | 'blink'
+  | 'vigor'
+  | 'identify'
+  | 'uncurse'
+  | 'lure'
+  | 'displace'
+  | 'dimlight';
+/** A potion whose effect is resolved by the scene (status / double-edged elixirs, 0.3). */
+export type PotionAction = 'venom' | 'mist' | 'scald' | 'riftheart';
 
 /**
  * The paper-doll slot a piece of gear occupies (0.2). 'ring' fits either of the
@@ -37,6 +48,8 @@ export interface ItemEffects {
   boost?: { maxHp?: number; attack?: number; defense?: number };
   /** Scroll action resolved by the scene. */
   scroll?: ScrollAction;
+  /** Potion action resolved by the scene (status / double-edged elixirs, 0.3). */
+  potion?: PotionAction;
   /** Coins granted (gold type). */
   gold?: number;
 }
@@ -55,6 +68,10 @@ export interface ItemDef {
   ranged?: boolean;
   /** Maximum range (tiles) for a ranged weapon. */
   range?: number;
+  /** Spawn-frequency multiplier on top of rarity weight (0.3; default 1, <1 = rarer). */
+  dropWeight?: number;
+  /** Earliest depth this item may be rolled on the floor (0.3; default 1). */
+  minDepth?: number;
 }
 
 export const RARITY_COLOR: Record<Rarity, number> = {
@@ -94,13 +111,35 @@ export function itemPrice(def: ItemDef, depth: number): number {
 /** A named random modifier that gear can roll, granting equip-stat bonuses (0.3). */
 export type StatKey = 'attack' | 'defense' | 'agility' | 'magic' | 'maxHp';
 
+/** Rule-effect ids resolved by the scene's affix hooks (0.3 phase 7). */
+export type AffixRule =
+  | 'echo'
+  | 'splinter'
+  | 'refract'
+  | 'unchain'
+  | 'saltcharge'
+  | 'breakstep'
+  | 'firetheft'
+  | 'wicklight'
+  | 'bloodpact'
+  | 'silentstep';
+
 export interface Affix {
   key: string;
   /** Short fragment shown before the item name (e.g. 锋锐). */
   name: string;
-  bonus: Partial<Record<StatKey, number>>;
+  /** Longer description for the item panel (rule affixes especially). */
+  description?: string;
+  /** Flat equip-stat bonus (numeric affixes); omitted for pure rule affixes. */
+  bonus?: Partial<Record<StatKey, number>>;
+  /** Rule effect this affix grants (changes combat behaviour, not just numbers). */
+  rule?: AffixRule;
+  /** Numeric parameters for the rule effect (radius / damage / chance, …). */
+  params?: Record<string, number>;
   /** Gear types this affix may roll on. */
   on: ItemType[];
+  /** Relative roll weight (default 1); rule affixes weigh < 1 so they stay a minority. */
+  weight?: number;
 }
 
 export const AFFIXES: readonly Affix[] = [
@@ -116,6 +155,18 @@ export const AFFIXES: readonly Affix[] = [
   { key: 'nimble', name: '轻灵', bonus: { agility: 2 }, on: ['armor'] },
   { key: 'hale', name: '强健', bonus: { maxHp: 8 }, on: ['weapon', 'armor', 'ring'] },
   { key: 'sage', name: '贤者', bonus: { magic: 2, maxHp: 3 }, on: ['weapon', 'ring'] },
+
+  // --- rule affixes (0.3 phase 7) — change how you fight, not just the numbers ---
+  { key: 'echo', name: '回声', description: '远程命中后荡开回响，照见目标周围的隐藏机关，并令其短暂易伤。', rule: 'echo', params: { radius: 2, mark: 2 }, on: ['weapon', 'ring'], weight: 0.5 },
+  { key: 'splinter', name: '裂骨', description: '近战击杀时，碎骨向相邻之敌迸溅伤害。', rule: 'splinter', params: { dmg: 3 }, on: ['weapon'], weight: 0.5 },
+  { key: 'refract', name: '折光', description: '每层首次受到远程攻击时，大幅减免该次伤害。', rule: 'refract', params: { reduce: 0.6 }, on: ['armor', 'ring'], weight: 0.5 },
+  { key: 'unchain', name: '赦链', description: '可强行卸下被诅咒的装备，代价是短暂易伤与失血。', rule: 'unchain', params: {}, on: ['ring'], weight: 0.45 },
+  { key: 'saltcharge', name: '蓄盐', description: '静待之间积蓄盐力，令下一次主动技能更猛。', rule: 'saltcharge', params: { cap: 3 }, on: ['weapon', 'ring'], weight: 0.45 },
+  { key: 'breakstep', name: '断步', description: '攻击迟缓或冰封之敌时，造成额外伤害。', rule: 'breakstep', params: { bonus: 4 }, on: ['weapon'], weight: 0.5 },
+  { key: 'firetheft', name: '盗火', description: '击杀燃烧之敌时夺回法力（无法力则回血）。', rule: 'firetheft', params: { mana: 4 }, on: ['weapon', 'ring'], weight: 0.45 },
+  { key: 'wicklight', name: '灯芯', description: '搜索范围 +1，但响动偶尔会引来环窟之物。', rule: 'wicklight', params: { radius: 1, attract: 0.22 }, on: ['ring', 'armor'], weight: 0.5 },
+  { key: 'bloodpact', name: '血契', description: '生命垂危（≤25%）时攻击大增，但受到的治疗减半。', rule: 'bloodpact', params: { atk: 4 }, on: ['weapon', 'ring'], weight: 0.45 },
+  { key: 'silentstep', name: '静步', description: '更善于处理门、陷阱与宝箱，且不易惊动敌人。', rule: 'silentstep', params: { bonus: 0.12 }, on: ['armor', 'ring'], weight: 0.5 },
 ];
 
 const AFFIX_BY_KEY = new Map(AFFIXES.map((a) => [a.key, a]));
@@ -159,6 +210,12 @@ export const ITEMS: readonly ItemDef[] = [
   { id: 'moss_potion', name: '翠藓药剂', type: 'potion', rarity: 'common', spriteFrame: 12, description: '苦涩的绿色药剂，缓缓回血。', effects: { heal: 9 } },
   { id: 'vigor_potion', name: '强健药剂', type: 'potion', rarity: 'rare', spriteFrame: 11, description: '罕见的灵药，永久强健体魄并回满生命。', effects: { heal: 999, boost: { maxHp: 6 } } },
 
+  // --- negative / double-edged potions (0.3) — default unidentified -----
+  { id: 'venom_potion', name: '毒血药剂', type: 'potion', rarity: 'common', spriteFrame: 12, dropWeight: 0.6, minDepth: 2, description: '墨绿黏稠，腥气扑鼻——饮下多半中毒；但毒，亦可为刃。', effects: { potion: 'venom' } },
+  { id: 'mist_potion', name: '迷雾药剂', type: 'potion', rarity: 'uncommon', spriteFrame: 11, dropWeight: 0.6, minDepth: 2, description: '瓶中翻涌着灰白雾气，入喉令人神思恍惚、方向尽失。', effects: { potion: 'mist' } },
+  { id: 'scald_potion', name: '灼喉药剂', type: 'potion', rarity: 'uncommon', spriteFrame: 10, dropWeight: 0.5, minDepth: 2, description: '赤红滚烫，下咽如吞火炭——或灼己身，或喷焰御敌。', effects: { potion: 'scald' } },
+  { id: 'riftheart_potion', name: '裂心药剂', type: 'potion', rarity: 'rare', spriteFrame: 11, dropWeight: 0.5, minDepth: 2, description: '刺心剧痛之后，往往涌起一股暖流——以痛换力的双刃灵药。', effects: { potion: 'riftheart' } },
+
   // --- scrolls ---------------------------------------------------------
   { id: 'light_scroll', name: '照明卷轴', type: 'scroll', rarity: 'common', spriteFrame: 13, description: '诵读后照亮整层环窟。', effects: { scroll: 'reveal' } },
   { id: 'smite_scroll', name: '灼击卷轴', type: 'scroll', rarity: 'uncommon', spriteFrame: 13, description: '降下灼光，灼伤视野内的所有敌人。', effects: { scroll: 'smite' } },
@@ -166,6 +223,11 @@ export const ITEMS: readonly ItemDef[] = [
   { id: 'tome_vigor', name: '秘典残页', type: 'scroll', rarity: 'rare', spriteFrame: 14, description: '残破的秘典，诵读可回满生命。', effects: { scroll: 'vigor' } },
   { id: 'discern_scroll', name: '鉴物卷轴', type: 'scroll', rarity: 'uncommon', spriteFrame: 13, description: '诵读后看清随身所有物品的真名与祝咒。', effects: { scroll: 'identify' } },
   { id: 'unbind_scroll', name: '解缚卷轴', type: 'scroll', rarity: 'uncommon', spriteFrame: 13, description: '诵读后解除身上装备的诅咒，使其得以卸下。', effects: { scroll: 'uncurse' } },
+
+  // --- negative / double-edged scrolls (0.3) — default unidentified -----
+  { id: 'lure_scroll', name: '引噪卷轴', type: 'scroll', rarity: 'uncommon', spriteFrame: 13, dropWeight: 0.6, description: '诵读后爆出刺耳噪响，惊动并引来四周的环窟居民。', effects: { scroll: 'lure' } },
+  { id: 'displace_scroll', name: '错位卷轴', type: 'scroll', rarity: 'uncommon', spriteFrame: 13, dropWeight: 0.7, description: '空间在诵读间扭曲错位，将你掷往别处——偶尔与近旁之物互换。', effects: { scroll: 'displace' } },
+  { id: 'dimlight_scroll', name: '裂灯卷轴', type: 'scroll', rarity: 'uncommon', spriteFrame: 13, dropWeight: 0.5, minDepth: 2, description: '光亮自卷轴边缘剥落，四周骤然昏暗，视野收窄。', effects: { scroll: 'dimlight' } },
 
   // --- food ------------------------------------------------------------
   { id: 'bread', name: '干面包', type: 'food', rarity: 'common', spriteFrame: 17, description: '硬邦邦的干面包，垫垫肚子。', effects: { heal: 5 } },

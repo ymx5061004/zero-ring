@@ -1,7 +1,7 @@
 import type { SerializedInstance } from '../systems/ItemInstance';
 import { EQUIP_SLOTS, type EquipSlot } from '../systems/InventorySystem';
 import { getItem } from '../data/items';
-import { shardsForRun } from './Meta';
+import { META_VERSION, shardsForRun } from './Meta';
 import type { MetaStats, RunState } from './types';
 
 /**
@@ -70,7 +70,9 @@ const DEFAULT_META: MetaStats = {
   bestDepth: 0,
   totalKills: 0,
   shards: 0,
-  upgrades: { vigor: 0, blade: 0, purse: 0, supplies: 0 },
+  upgrades: { vigor: 0, blade: 0, purse: 0, supplies: 0, tradeRoutes: 0 },
+  seen: [],
+  version: META_VERSION,
 };
 
 export class SaveManager {
@@ -107,18 +109,40 @@ export class SaveManager {
     }
   }
 
+  /**
+   * Read the meta blob, forward-migrating any older shape: new upgrade keys
+   * (tradeRoutes) default to 0, `seen` defaults to [], and `version` is stamped
+   * current. Over-cap stored levels are NOT clamped here (kept, but capped at apply
+   * time) so a player never silently loses a purchase.
+   */
   static getMeta(): MetaStats {
     const stored = SaveManager.read<Partial<MetaStats>>(META_KEY);
     return {
       ...DEFAULT_META,
       ...(stored ?? {}),
       upgrades: { ...DEFAULT_META.upgrades, ...(stored?.upgrades ?? {}) },
+      seen: Array.isArray(stored?.seen) ? stored!.seen! : [],
+      version: META_VERSION,
     };
   }
 
   /** Persist the whole meta blob (used after a legacy-upgrade purchase). */
   static saveMeta(meta: MetaStats): void {
     SaveManager.write(META_KEY, meta);
+  }
+
+  /** 图鉴: remember a defeated monster kind (writes only on the first kill of a kind). */
+  static recordSeen(monsterId: string): void {
+    const meta = SaveManager.getMeta();
+    const seen = meta.seen ?? [];
+    if (seen.includes(monsterId)) return;
+    seen.push(monsterId);
+    SaveManager.write(META_KEY, { ...meta, seen });
+  }
+
+  /** Whether the player has ever defeated this monster kind (for 图鉴 lore hints). */
+  static hasSeen(monsterId: string): boolean {
+    return (SaveManager.getMeta().seen ?? []).includes(monsterId);
   }
 
   /**

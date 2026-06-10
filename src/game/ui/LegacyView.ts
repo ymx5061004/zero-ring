@@ -93,7 +93,9 @@ export class LegacyView extends Phaser.GameObjects.Container {
 
     const rowsTop = this.top + 84;
     UPGRADES.forEach((u, i) => {
-      const lvl = meta.upgrades[u.key];
+      // Clamp the displayed level to the (possibly lowered) cap so an over-bought
+      // older save reads as 已满 instead of an out-of-range level (phase 9).
+      const lvl = Math.min(meta.upgrades[u.key] ?? 0, u.max);
       const maxed = lvl >= u.max;
       const cost = upgradeCost(u.base, lvl);
       const afford = meta.shards >= cost;
@@ -110,7 +112,7 @@ export class LegacyView extends Phaser.GameObjects.Container {
 
       this.content.add(
         this.content.scene.add
-          .text(rx + 16, cy - 13, `${u.name}　Lv ${lvl}/${u.max}`, { fontFamily: FontFamily, fontSize: '15px', color: toCss(Palette.text), fontStyle: 'bold' })
+          .text(rx + 16, cy - 13, `${u.name}　${u.kind === 'unlock' ? (maxed ? '已解锁' : '可解锁') : `Lv ${lvl}/${u.max}`}`, { fontFamily: FontFamily, fontSize: '15px', color: toCss(Palette.text), fontStyle: 'bold' })
           .setOrigin(0, 0.5),
       );
       this.content.add(
@@ -123,7 +125,7 @@ export class LegacyView extends Phaser.GameObjects.Container {
       if (maxed) {
         this.content.add(
           this.content.scene.add
-            .text(rx + rw - 16, cy, '已满', { fontFamily: FontFamily, fontSize: '14px', color: toCss(Palette.accent), fontStyle: 'bold' })
+            .text(rx + rw - 16, cy, u.kind === 'unlock' ? '已解锁' : '已满', { fontFamily: FontFamily, fontSize: '14px', color: toCss(Palette.accent), fontStyle: 'bold' })
             .setOrigin(1, 0.5),
         );
       } else {

@@ -14,28 +14,39 @@ const RARITY_WEIGHT: Record<Rarity, number> = {
   epic: 1,
 };
 
-function pickWeighted(pool: readonly ItemDef[], rng: RNG, rareBoost: number): ItemDef {
+/**
+ * Weighted pick honouring rarity, a depth-scaled rare boost, each item's optional
+ * `dropWeight` (0.3 — lets negative/double-edged items spawn but stay a minority),
+ * and `minDepth` (so directly-harmful items never appear on the very first floor).
+ */
+function pickWeighted(pool: readonly ItemDef[], rng: RNG, rareBoost: number, depth: number): ItemDef {
+  const avail = pool.filter((it) => (it.minDepth ?? 1) <= depth);
+  const usable = avail.length ? avail : pool;
   let total = 0;
-  const weights = pool.map((it) => {
-    const w = RARITY_WEIGHT[it.rarity] * (it.rarity === 'common' ? 1 : rareBoost);
+  const weights = usable.map((it) => {
+    const w = RARITY_WEIGHT[it.rarity] * (it.rarity === 'common' ? 1 : rareBoost) * (it.dropWeight ?? 1);
     total += w;
     return w;
   });
   let roll = rng.next() * total;
-  for (let i = 0; i < pool.length; i++) {
+  for (let i = 0; i < usable.length; i++) {
     roll -= weights[i];
-    if (roll <= 0) return pool[i];
+    if (roll <= 0) return usable[i];
   }
-  return pool[pool.length - 1];
+  return usable[usable.length - 1];
 }
 
 const NON_GOLD = ITEMS.filter((it) => it.type !== 'gold');
+/** The merchant deals in honest goods — no status potions / lure / dimlight wares. */
+const SHOP_POOL = NON_GOLD.filter(
+  (it) => !it.effects.potion && it.effects.scroll !== 'lure' && it.effects.scroll !== 'dimlight',
+);
 
 /** An item id to scatter on the floor (mostly consumables and the odd gear). */
 export function rollFloorItem(depth: number, rng: RNG): string {
   // Floors lean toward consumables + gold; gear and rares grow with depth.
   if (rng.chance(0.3)) return rng.chance(0.7) ? 'coin' : 'coin_pile';
-  return pickWeighted(NON_GOLD, rng, 1 + depth * 0.15).id;
+  return pickWeighted(NON_GOLD, rng, 1 + depth * 0.15, depth).id;
 }
 
 /**
@@ -45,16 +56,21 @@ export function rollFloorItem(depth: number, rng: RNG): string {
 export function rollMonsterDrop(depth: number, rng: RNG): string | null {
   if (!rng.chance(0.34)) return null;
   if (rng.chance(0.5)) return rng.chance(0.8) ? 'coin' : 'coin_pile';
-  return pickWeighted(NON_GOLD, rng, 1 + depth * 0.2).id;
+  return pickWeighted(NON_GOLD, rng, 1 + depth * 0.2, depth).id;
 }
 
-/** The merchant's wares — `count` distinct item ids (no gold), weighted by depth. */
-export function rollShopStock(depth: number, rng: RNG, count: number): string[] {
+/**
+ * The merchant's wares — `count` distinct item ids (no gold), weighted by depth.
+ * With `exotic` (the 商路 meta unlock) the pool widens to include the otherwise-barred
+ * status / double-edged goods — pure *buying choice*, not raw strength.
+ */
+export function rollShopStock(depth: number, rng: RNG, count: number, exotic = false): string[] {
+  const pool = exotic ? NON_GOLD : SHOP_POOL;
   const stock: string[] = [];
   const used = new Set<string>();
   let guard = 0;
   while (stock.length < count && guard++ < 200) {
-    const it = pickWeighted(NON_GOLD, rng, 1.6 + depth * 0.15);
+    const it = pickWeighted(pool, rng, 1.6 + depth * 0.15, depth);
     if (used.has(it.id)) continue;
     used.add(it.id);
     stock.push(it.id);
@@ -67,7 +83,7 @@ export function rollChestLoot(depth: number, rng: RNG): string[] {
   const count = rng.range(1, 3);
   const loot: string[] = [];
   for (let i = 0; i < count; i++) {
-    loot.push(rng.chance(0.25) ? 'coin_pile' : pickWeighted(NON_GOLD, rng, 2.4 + depth * 0.2).id);
+    loot.push(rng.chance(0.25) ? 'coin_pile' : pickWeighted(NON_GOLD, rng, 2.4 + depth * 0.2, depth).id);
   }
   return loot;
 }
